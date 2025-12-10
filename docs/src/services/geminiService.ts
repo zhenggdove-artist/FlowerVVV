@@ -11,11 +11,26 @@ const analysisSchema = {
   required: ["detected", "box_2d", "confidence", "label"],
 } as const;
 
-// Proxy endpoint (Cloudflare Worker) to avoid exposing API key in front-end
+// 動態取得代理網址：優先 query -> localStorage -> window.PROXY_URL -> build 時 env -> 預設 github.io 用的 worker -> 相對路徑
 const resolveProxyUrl = () => {
+  const isBrowser = typeof window !== 'undefined';
+  let queryProxy = '';
+  if (isBrowser) {
+    const qp = new URLSearchParams(window.location.search);
+    queryProxy = qp.get('proxy') || qp.get('api') || '';
+    if (queryProxy) {
+      window.localStorage.setItem('PROXY_URL', queryProxy);
+    }
+  }
+
+  const stored = isBrowser ? window.localStorage.getItem('PROXY_URL') || '' : '';
+  const fromWindow = isBrowser ? (window as any).PROXY_URL || '' : '';
   const fromEnv = (import.meta as any).env?.VITE_PROXY_URL || '';
-  const fromWindow = typeof window !== 'undefined' ? (window as any).PROXY_URL : '';
-  return fromEnv || fromWindow || '/api/analyze'; // default relative path
+  const defaultGithub = isBrowser && window.location.hostname.endsWith('github.io')
+    ? 'https://royal-base-184.wufu104.workers.dev'
+    : '';
+
+  return queryProxy || stored || fromWindow || fromEnv || defaultGithub || '/api/analyze';
 };
 
 export const analyzeImage = async (base64Image: string): Promise<AnalysisResult> => {

@@ -11,6 +11,7 @@ interface PlantGrowthProps {
 }
 
 const FRAME_COUNT = 444; // frame_00000.png ... frame_00443.png
+const FRAME_STEP = 3; // 跳幀減少載入量
 const FPS = 24;
 const MAX_PLANTS = 8;
 
@@ -83,7 +84,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     if (!active) return;
     const box = mapBoxToScreen();
     const newPlants: PlantInstance[] = [];
-    const plantCount = 3; // 每次多幾株
+    const plantCount = 4; // 每次多幾株
     for (let i = 0; i < plantCount; i++) {
       const x = box.xMin + Math.random() * (box.xMax - box.xMin);
       const y = box.yMax - Math.random() * (box.yMax - box.yMin); // 從下往上分布
@@ -91,7 +92,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
         id: nextId.current++,
         x,
         y,
-        scale: 0.05 + Math.random() * 0.01, // 約 1/20 大小再稍微抖動
+        scale: 0.03 + Math.random() * 0.008, // 再縮小
       });
     }
     setPlants((prev) => [...prev, ...newPlants].slice(-MAX_PLANTS));
@@ -105,7 +106,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     }
     if (frameTimer.current) clearInterval(frameTimer.current);
     frameTimer.current = setInterval(() => {
-      setCurrentFrame((f) => (f + 1) % FRAME_COUNT);
+      setCurrentFrame((f) => (f + FRAME_STEP) % FRAME_COUNT);
     }, 1000 / FPS);
     return () => {
       if (frameTimer.current) clearInterval(frameTimer.current);
