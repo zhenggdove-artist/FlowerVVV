@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { GameState, AnalysisResult } from '../types.ts';
+import { GameState, AnalysisResult } from '../types';
 
 interface DreamOverlayProps {
   gameState: GameState;
@@ -89,7 +89,7 @@ const DreamOverlay: React.FC<DreamOverlayProps> = ({ gameState, onInteraction, o
       {(gameState === GameState.ANALYZING) && (
         <div className="absolute inset-0 bg-black/20 z-10 flex items-center justify-center backdrop-blur-[2px] transition-all duration-500">
            <div className="text-neon-pink font-code text-2xl animate-pulse bg-black/70 p-6 border border-neon-pink shadow-[0_0_30px_rgba(255,16,240,0.3)]">
-              MAPPING SURFACE TOPOLOGY...
+              VENI VIDI VICI QUID SUMUS
               <div className="w-full h-1 bg-neon-pink/30 mt-4 overflow-hidden relative">
                  <div className="absolute h-full bg-neon-pink w-1/3 animate-[scanline_1.5s_ease-in-out_infinite]"></div>
               </div>

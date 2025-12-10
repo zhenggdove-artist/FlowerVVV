@@ -1,8 +1,8 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import DreamOverlay from './components/DreamOverlay.tsx';
-import PlantGrowth from './components/PlantGrowth.tsx';
-import { analyzeImage } from './services/geminiService.ts';
-import { GameState, AnalysisResult } from './types.ts';
+import DreamOverlay from './components/DreamOverlay';
+import PlantGrowth from './components/PlantGrowth';
+import { analyzeImage } from './services/geminiService';
+import { GameState, AnalysisResult } from './types';
 
 const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -73,7 +73,7 @@ const App: React.FC = () => {
 
         // 2. Analyze
         setGameState(GameState.ANALYZING);
-        setStatusText("SEARCHING...");
+        setStatusText("VENI VIDI VICI QUID SUMUS");
         
         try {
             const result = await analyzeImage(base64);
@@ -140,7 +140,7 @@ const App: React.FC = () => {
         />
       )}
 
-      {/* --- LAYER 3: PLANT GROWTH (THREE.JS) --- */}
+      {/* --- LAYER 3: PLANT GROWTH (THREE.JS + HUD) --- */}
       <PlantGrowth 
         active={gameState === GameState.GROWING} 
         analysis={analysisResult} 
