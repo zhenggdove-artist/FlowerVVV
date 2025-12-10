@@ -248,21 +248,10 @@ const App: React.FC = () => {
         }}
       />
 
-      {/* --- LAYER 1.5: REFERENCE IMAGE OVERLAY (30% opacity) --- */}
+      {/* --- LAYER 1.5: GLITCH OVERLAY (ONLY wobbling glitch, no static image) --- */}
       {!capturedImage && gameState === GameState.IDLE && (
         <>
-          {/* Base reference image overlay */}
-          <img
-            src={referenceImage}
-            alt="Reference"
-            className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none"
-            style={{
-              opacity: 0.3,
-              mixBlendMode: 'lighten'
-            }}
-          />
-
-          {/* Masked Glitch Effect - only on red region */}
+          {/* Masked Glitch Effect - wobbling wave effect ONLY */}
           <MaskedGlitchEffect
             baseImage={referenceImage}
             maskImage={maskImage}
@@ -281,6 +270,23 @@ const App: React.FC = () => {
                 : '0 0 20px rgba(255, 0, 0, 0.5)',
             }}
           />
+
+          {/* ALIGNMENT STATUS - SUPER VISIBLE */}
+          <div className="absolute top-20 left-1/2 transform -translate-x-1/2 z-50 pointer-events-none">
+            <div className="bg-black/80 border-4 px-8 py-4 text-center"
+                 style={{
+                   borderColor: isAligned ? '#00FF00' : '#FF0000',
+                   boxShadow: isAligned ? '0 0 20px #00FF00' : '0 0 20px #FF0000'
+                 }}>
+              <div className="text-2xl font-bold tracking-wider"
+                   style={{ color: isAligned ? '#00FF00' : '#FF0000' }}>
+                {statusText}
+              </div>
+              <div className="text-sm mt-2" style={{ color: isAligned ? '#00FF00' : '#FF0000' }}>
+                {isAligned ? '✓ READY TO CAPTURE' : '✗ MOVE CAMERA TO ALIGN'}
+              </div>
+            </div>
+          </div>
         </>
       )}
 

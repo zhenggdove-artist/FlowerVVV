@@ -154,14 +154,23 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       // Create a copy for reading original values
       const originalData = new Uint8ClampedArray(data);
 
-      // Wave parameters
+      // ========================================
+      // 🎛️ GLITCH效果參數 - 在這裡調整!
+      // ========================================
       const time = timeRef.current;
-      const waveSpeed = 2.0;
-      const waveAmplitude = 8; // pixels of horizontal displacement
-      const waveFrequency = 0.02; // waves per pixel height
 
-      // RGB channel separation amounts (chromatic aberration)
-      const rgbSeparation = Math.sin(time * 3) * 4; // oscillating separation
+      // 波紋速度 (數值越大晃動越快)
+      const waveSpeed = 3.0; // 原本: 2.0
+
+      // 波紋幅度 (水平位移的像素數,越大晃動越明顯)
+      const waveAmplitude = 15; // 原本: 8
+
+      // 波紋頻率 (數值越大波紋越密集)
+      const waveFrequency = 0.03; // 原本: 0.02
+
+      // RGB色彩分離強度 (數值越大彩虹邊緣越明顯)
+      const rgbSeparation = Math.sin(time * 4) * 6; // 原本: Math.sin(time * 3) * 4
+      // ========================================
 
       // Apply wave distortion ONLY to masked pixels
       for (let y = 0; y < height; y++) {
@@ -207,11 +216,22 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
         }
       }
 
+      // ========================================
+      // 🎛️ 隨機干擾爆發參數
+      // ========================================
+      // 強烈干擾的觸發機率 (0.0-1.0, 越大越頻繁)
+      const glitchBurstProbability = 0.15; // 原本: 0.05
+
       // Add occasional stronger glitch bursts
-      if (Math.random() < 0.05) {
+      if (Math.random() < glitchBurstProbability) {
         const glitchLine = Math.floor(Math.random() * height);
-        const glitchHeight = Math.floor(Math.random() * 10) + 5;
-        const glitchDisplacement = Math.floor((Math.random() - 0.5) * 30);
+
+        // 干擾區域高度 (像素數)
+        const glitchHeight = Math.floor(Math.random() * 20) + 10; // 原本: 10 + 5
+
+        // 干擾位移強度
+        const glitchDisplacement = Math.floor((Math.random() - 0.5) * 50); // 原本: 30
+        // ========================================
 
         for (let dy = 0; dy < glitchHeight; dy++) {
           const y = glitchLine + dy;
@@ -255,9 +275,8 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       ref={canvasRef}
       className="absolute top-0 left-0 w-full h-full pointer-events-none"
       style={{
-        opacity: 1.0,
-        border: '5px solid cyan',
-        zIndex: 15
+        opacity: 0.3, // 🎛️ Glitch透明度 (0.0-1.0)
+        zIndex: 10
       }}
     />
   );
