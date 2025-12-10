@@ -4,10 +4,6 @@
 
 # Run and deploy your AI Studio app
 
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/drive/1Y5T_AL5q3FEVfOguSylE2rxhpjSvLXqB
-
 ## Run Locally
 
 **Prerequisites:**  Node.js
@@ -15,6 +11,15 @@ View your app in AI Studio: https://ai.studio/apps/drive/1Y5T_AL5q3FEVfOguSylE2r
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Set the `VITE_GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key  
+   - You can also provide it at runtime via `window.GEMINI_API_KEY = '...'` before loading the bundle or append `?apiKey=...` to the URL (stored to `localStorage` after first use).
 3. Run the app:
    `npm run dev`
+
+## Build for GitHub Pages
+
+Source lives in `docs/src`. Run `npm run bundle` from `docs/` to:
+1) build to `docs/dist/` via Vite with relative asset paths, then  
+2) copy the built assets + `index.html` into `docs/` for Pages hosting.
+
+Commit `docs/index.html` and `docs/assets/**` to deploy. `docs/dist/` stays ignored.

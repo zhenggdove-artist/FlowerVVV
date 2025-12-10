@@ -1,0 +1,22 @@
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #050505;
+  color: #00ff00;
+  overflow: hidden;
+  font-family: 'Orbitron', sans-serif;
+}
+
+/* Hide scrollbar for the chromatic HUD feel */
+::-webkit-scrollbar {
+  width: 0px;
+  background: transparent;
+}
