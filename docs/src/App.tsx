@@ -10,6 +10,8 @@ const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const comparisonCanvasRef = useRef<HTMLCanvasElement>(null);
+  const referenceImageRef = useRef<HTMLImageElement | null>(null);
+  const referenceImageDataRef = useRef<ImageData | null>(null);
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -17,6 +19,7 @@ const App: React.FC = () => {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [isAligned, setIsAligned] = useState<boolean>(false);
+  const [similarityScore, setSimilarityScore] = useState<number>(0);
 
   // A counter that increments to trigger new growth bursts
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
@@ -26,6 +29,27 @@ const App: React.FC = () => {
     const handleResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Preload reference image
+  useEffect(() => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      referenceImageRef.current = img;
+
+      // Pre-process reference image data
+      const canvas = document.createElement('canvas');
+      canvas.width = 160;  // Lower resolution for faster comparison
+      canvas.height = 120;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, 160, 120);
+        referenceImageDataRef.current = ctx.getImageData(0, 0, 160, 120);
+        console.log("Reference image loaded and processed");
+      }
+    };
+    img.src = referenceImage;
   }, []);
 
   // Initialize Camera
@@ -55,55 +79,69 @@ const App: React.FC = () => {
   // Check alignment between video feed and reference image
   useEffect(() => {
     if (gameState !== GameState.IDLE || !videoRef.current || !comparisonCanvasRef.current) return;
+    if (!referenceImageDataRef.current) return; // Wait for reference image to load
 
     const checkAlignment = () => {
       const video = videoRef.current;
       const canvas = comparisonCanvasRef.current;
-      if (!video || !canvas || video.videoWidth === 0) return;
+      const refData = referenceImageDataRef.current;
 
-      canvas.width = 320; // Lower resolution for performance
-      canvas.height = 240;
+      if (!video || !canvas || !refData || video.videoWidth === 0) return;
+
+      canvas.width = 160;
+      canvas.height = 120;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
       // Draw current video frame
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const videoData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(video, 0, 0, 160, 120);
+      const videoData = ctx.getImageData(0, 0, 160, 120);
 
-      // Load and compare with reference image
-      const img = new Image();
-      img.src = referenceImage;
-      img.onload = () => {
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const refData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      // Calculate structural similarity using normalized cross-correlation
+      let totalDiff = 0;
+      let videoSum = 0;
+      let refSum = 0;
+      const pixelCount = videoData.data.length / 4;
 
-        // Calculate similarity (simplified MSE)
-        let diffSum = 0;
-        const pixels = videoData.data.length / 4;
+      for (let i = 0; i < videoData.data.length; i += 4) {
+        // Convert to grayscale for comparison
+        const videoGray = (videoData.data[i] + videoData.data[i + 1] + videoData.data[i + 2]) / 3;
+        const refGray = (refData.data[i] + refData.data[i + 1] + refData.data[i + 2]) / 3;
 
-        for (let i = 0; i < videoData.data.length; i += 4) {
-          const rDiff = videoData.data[i] - refData.data[i];
-          const gDiff = videoData.data[i + 1] - refData.data[i + 1];
-          const bDiff = videoData.data[i + 2] - refData.data[i + 2];
-          diffSum += (rDiff * rDiff + gDiff * gDiff + bDiff * bDiff);
-        }
+        const diff = Math.abs(videoGray - refGray);
+        totalDiff += diff;
 
-        const mse = diffSum / (pixels * 3);
-        const similarity = Math.max(0, 100 - Math.sqrt(mse) / 2.55);
+        videoSum += videoGray;
+        refSum += refGray;
+      }
 
-        // If similarity > 70%, show alignment hint
-        setIsAligned(similarity > 70);
-        if (similarity > 70) {
-          setStatusText("ALIGNED - TAP TO CAPTURE");
-        } else {
-          setStatusText("");
-        }
-      };
+      // Average difference per pixel
+      const avgDiff = totalDiff / pixelCount;
+
+      // Convert to similarity percentage (0-100)
+      // Lower difference = higher similarity
+      // Typical range: avgDiff can be 0-255
+      const similarity = Math.max(0, 100 - (avgDiff / 255) * 100);
+
+      // Debug logging
+      console.log(`Similarity: ${similarity.toFixed(2)}%, Avg Diff: ${avgDiff.toFixed(2)}`);
+
+      setSimilarityScore(similarity);
+
+      // More strict threshold: 85% similarity required
+      const threshold = 85;
+      setIsAligned(similarity >= threshold);
+
+      if (similarity >= threshold) {
+        setStatusText(`ALIGNED ${similarity.toFixed(0)}% - TAP TO CAPTURE`);
+      } else {
+        setStatusText(`Align camera: ${similarity.toFixed(0)}%`);
+      }
     };
 
     const intervalId = setInterval(checkAlignment, 500); // Check every 500ms
     return () => clearInterval(intervalId);
-  }, [gameState]);
+  }, [gameState, referenceImageDataRef.current]);
 
   const handleInteraction = useCallback(async () => {
     // IF IDLE: Capture and use mask
