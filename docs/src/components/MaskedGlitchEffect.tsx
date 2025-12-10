@@ -24,8 +24,16 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
 
   // Load images and create mask buffer
   useEffect(() => {
+    console.log("=================================================");
+    console.log("MaskedGlitchEffect: COMPONENT MOUNTED!");
+    console.log("Active:", active);
+    console.log("Width:", width, "Height:", height);
+    console.log("=================================================");
+
     const loadImages = async () => {
       console.log("MaskedGlitchEffect: Loading images...");
+      console.log("Base image path:", baseImage);
+      console.log("Mask image path:", maskImage);
 
       try {
         // Load base image
@@ -108,6 +116,7 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
 
     let lastTime = Date.now();
 
+    let frameCount = 0;
     const animate = () => {
       const baseImg = baseImageRef.current;
       const maskBuffer = maskBufferRef.current;
@@ -115,6 +124,11 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       if (!baseImg || !maskBuffer) {
         animationFrameRef.current = requestAnimationFrame(animate);
         return;
+      }
+
+      frameCount++;
+      if (frameCount % 60 === 0) {
+        console.log("MaskedGlitchEffect: Animating frame", frameCount);
       }
 
       const currentTime = Date.now();
@@ -240,7 +254,11 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
     <canvas
       ref={canvasRef}
       className="absolute top-0 left-0 w-full h-full pointer-events-none"
-      style={{ opacity: 0.8 }}
+      style={{
+        opacity: 1.0,
+        border: '5px solid cyan',
+        zIndex: 15
+      }}
     />
   );
 };

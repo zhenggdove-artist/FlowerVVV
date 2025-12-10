@@ -9,6 +9,10 @@ const referenceImage = './01.jpg';
 const maskImage = './02.jpg';
 
 const App: React.FC = () => {
+  console.log("###################################################");
+  console.log("APP.TSX: COMPONENT RENDERING!");
+  console.log("###################################################");
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const comparisonCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -25,6 +29,8 @@ const App: React.FC = () => {
 
   // A counter that increments to trigger new growth bursts
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
+
+  console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "isAligned:", isAligned);
 
   // Handle Resize
   useEffect(() => {
