@@ -3,7 +3,8 @@ import DreamOverlay from './components/DreamOverlay.tsx';
 import PlantGrowth from './components/PlantGrowth.tsx';
 import { GameState, AnalysisResult } from './types.ts';
 
-const referenceImage = '/01.jpg';
+// Use relative path for better compatibility with GitHub Pages
+const referenceImage = './01.jpg';
 
 const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);

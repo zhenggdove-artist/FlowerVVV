@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { AnalysisResult } from '../types.ts';
 
-const maskImage = '/02.jpg';
+// Use relative path for better compatibility with GitHub Pages
+const maskImage = './02.jpg';
 
 interface PlantGrowthProps {
   analysis: AnalysisResult | null;
