@@ -35,11 +35,11 @@ const vertexShader = `
     }
 
     vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-    
+
     // Size attenuation manually or fixed
-    // Flowers bigger than stems
-    gl_PointSize = (aType > 2.5 ? 12.0 : (aType > 0.5 ? 3.0 : 0.0));
-    
+    // Flowers reduced to 1/4 size (was 12.0, now 3.0)
+    gl_PointSize = (aType > 2.5 ? 3.0 : (aType > 0.5 ? 3.0 : 0.0));
+
     gl_Position = projectionMatrix * mvPosition;
   }
 `;

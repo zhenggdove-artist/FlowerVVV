@@ -110,6 +110,13 @@ const App: React.FC = () => {
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
 
+        // Check if aligned before allowing capture
+        if (!isAligned) {
+          setStatusText("PLEASE ALIGN WITH REFERENCE IMAGE");
+          setTimeout(() => setStatusText(""), 2000);
+          return;
+        }
+
         setGameState(GameState.CAPTURING);
         setStatusText("");
 
@@ -150,7 +157,7 @@ const App: React.FC = () => {
         setGrowthTrigger(prev => prev + 1);
     }
 
-  }, [gameState]);
+  }, [gameState, isAligned]);
 
   const handleReset = () => {
     setGameState(GameState.IDLE);
@@ -182,15 +189,27 @@ const App: React.FC = () => {
 
       {/* --- LAYER 1.5: REFERENCE IMAGE OVERLAY (30% opacity) --- */}
       {!capturedImage && gameState === GameState.IDLE && (
-        <img
-          src={referenceImage}
-          alt="Reference"
-          className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none"
-          style={{
-            opacity: 0.3,
-            mixBlendMode: 'lighten'
-          }}
-        />
+        <>
+          <img
+            src={referenceImage}
+            alt="Reference"
+            className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none"
+            style={{
+              opacity: 0.3,
+              mixBlendMode: 'lighten'
+            }}
+          />
+          {/* Alignment indicator border */}
+          <div
+            className="absolute inset-0 pointer-events-none transition-all duration-300"
+            style={{
+              border: isAligned ? '8px solid #00FF00' : '8px solid #FF0000',
+              boxShadow: isAligned
+                ? '0 0 30px rgba(0, 255, 0, 0.8), inset 0 0 30px rgba(0, 255, 0, 0.3)'
+                : '0 0 20px rgba(255, 0, 0, 0.5)',
+            }}
+          />
+        </>
       )}
 
       {/* --- LAYER 2: FROZEN IMAGE (For Analysis/Growth) --- */}
