@@ -1,8 +1,8 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import DreamOverlay from './components/DreamOverlay';
-import PlantGrowth from './components/PlantGrowth';
-import { analyzeImage } from './services/geminiService';
-import { GameState, AnalysisResult } from './types';
+import DreamOverlay from './components/DreamOverlay.tsx';
+import PlantGrowth from './components/PlantGrowth.tsx';
+import { analyzeImage } from './services/geminiService.ts';
+import { GameState, AnalysisResult } from './types.ts';
 
 const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);

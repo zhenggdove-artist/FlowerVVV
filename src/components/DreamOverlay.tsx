@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { GameState, AnalysisResult } from '../types';
+import { GameState, AnalysisResult } from '../types.ts';
 
 interface DreamOverlayProps {
   gameState: GameState;

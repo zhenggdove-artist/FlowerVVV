@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { AnalysisResult } from '../types';
+import { AnalysisResult } from '../types.ts';
 
 interface PlantGrowthProps {
   analysis: AnalysisResult | null;

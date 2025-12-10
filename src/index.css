@@ -1,0 +1,12 @@
+body {
+  background-color: #050505;
+  color: #00FF00;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Custom Scrollbar for hidden utility */
+::-webkit-scrollbar {
+  width: 0px;
+  background: transparent;
+}
