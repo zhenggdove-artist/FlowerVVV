@@ -17,16 +17,16 @@ interface PlantGrowthProps {
 // Custom Shader for swaying plants
 const vertexShader = `
   uniform float uTime;
-  attribute float aType; // 0:Dead, 1:Head, 2:Stem, 3:Flower
+  attribute float aType; // 0:Dead, 1:Head, 2:Stem, 3:Flower, 4:Bug
   attribute vec3 color;
   varying vec3 vColor;
-  
+
   void main() {
     vColor = color;
     vec3 pos = position;
 
     // Sway logic for Stems (2) and Flowers (3)
-    if (aType > 1.5) {
+    if (aType > 1.5 && aType < 3.5) {
       float swayIntensity = (aType > 2.5) ? 3.0 : 1.0; // Flowers sway more
       float speed = 2.0;
       // Simple sine wave displacement based on Y position and Time
@@ -34,11 +34,21 @@ const vertexShader = `
       pos.y += cos(uTime * speed * 0.7 + pos.x * 0.05) * (swayIntensity * 0.5);
     }
 
+    // Bug movement (4) - erratic flying
+    if (aType > 3.5) {
+      float speed = 5.0;
+      pos.x += sin(uTime * speed + pos.y * 0.2) * 8.0;
+      pos.y += cos(uTime * speed * 1.3 + pos.x * 0.15) * 8.0;
+      pos.x += sin(uTime * speed * 2.0) * 4.0;
+    }
+
     vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
 
     // Size attenuation manually or fixed
-    // Flowers reduced to 1/4 size (was 12.0, now 3.0)
-    gl_PointSize = (aType > 2.5 ? 3.0 : (aType > 0.5 ? 3.0 : 0.0));
+    // Flowers: 3.0, Stems: 3.0, Bugs: 2.0
+    float size = 3.0;
+    if (aType > 3.5) size = 2.0; // Bugs smaller
+    gl_PointSize = (aType > 0.5) ? size : 0.0;
 
     gl_Position = projectionMatrix * mvPosition;
   }
@@ -83,8 +93,8 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
   const dataRef = useRef<{
     positions: Float32Array;
     colors: Float32Array;
-    types: Float32Array; // 0: Dead, 1: Active Vine Head, 2: Vine Body (Static), 3: Flower
-    velocities: Float32Array; 
+    types: Float32Array; // 0: Dead, 1: Active Vine Head, 2: Vine Body (Static), 3: Flower, 4: Bug
+    velocities: Float32Array;
     life: Float32Array;
     activeHeads: number[]; // Indices of active heads for HUD tracking
   } | null>(null);
@@ -311,15 +321,19 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
              positions[idx * 3 + 2] = 0;
              life[idx] = -1;
 
-             if (type === 2) { // VINE BODY
-                colors[idx * 3] = 0.0;
-                colors[idx * 3 + 1] = 0.5 + Math.random() * 0.5;
-                colors[idx * 3 + 2] = 0.2;
+             if (type === 2) { // VINE BODY - Dark green (墨綠色)
+                colors[idx * 3] = 0.0 + Math.random() * 0.1;     // R: 0-0.1
+                colors[idx * 3 + 1] = 0.2 + Math.random() * 0.15; // G: 0.2-0.35 (darker green)
+                colors[idx * 3 + 2] = 0.1 + Math.random() * 0.1;  // B: 0.1-0.2
              } else if (type === 3) { // FLOWER
                 // Neon Pink/Purple
                 colors[idx * 3] = 1.0;
                 colors[idx * 3 + 1] = 0.0 + Math.random() * 0.2;
                 colors[idx * 3 + 2] = 0.8 + Math.random() * 0.2;
+             } else if (type === 4) { // BUG - Blue
+                colors[idx * 3] = 0.0 + Math.random() * 0.2;     // R: 0-0.2
+                colors[idx * 3 + 1] = 0.3 + Math.random() * 0.3; // G: 0.3-0.6
+                colors[idx * 3 + 2] = 0.8 + Math.random() * 0.2; // B: 0.8-1.0 (bright blue)
              }
              return;
          }
@@ -403,6 +417,11 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
         // Bloom
         if (Math.random() < 0.03) {
             spawnStatic(x + (Math.random()-0.5)*15, y + (Math.random()-0.5)*15, 3);
+        }
+
+        // Spawn bugs (small chance)
+        if (Math.random() < 0.02) {
+            spawnStatic(x + (Math.random()-0.5)*30, y + (Math.random()-0.5)*30, 4);
         }
 
         life[i] -= 0.015;

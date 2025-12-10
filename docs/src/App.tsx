@@ -225,18 +225,38 @@ const App: React.FC = () => {
         }}
       />
 
-      {/* --- LAYER 1.5: REFERENCE IMAGE OVERLAY (30% opacity) --- */}
+      {/* --- LAYER 1.5: REFERENCE IMAGE OVERLAY (30% opacity) WITH GLITCH --- */}
       {!capturedImage && gameState === GameState.IDLE && (
         <>
-          <img
-            src={referenceImage}
-            alt="Reference"
-            className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none"
-            style={{
-              opacity: 0.3,
-              mixBlendMode: 'lighten'
-            }}
-          />
+          <div className="absolute top-0 left-0 w-full h-full pointer-events-none glitch-container">
+            <img
+              src={referenceImage}
+              alt="Reference"
+              className="absolute top-0 left-0 w-full h-full object-cover glitch-image"
+              style={{
+                opacity: 0.3,
+                mixBlendMode: 'lighten'
+              }}
+            />
+            <img
+              src={referenceImage}
+              alt="Reference Glitch 1"
+              className="absolute top-0 left-0 w-full h-full object-cover glitch-layer glitch-layer-1"
+              style={{
+                opacity: 0.3,
+                mixBlendMode: 'lighten'
+              }}
+            />
+            <img
+              src={referenceImage}
+              alt="Reference Glitch 2"
+              className="absolute top-0 left-0 w-full h-full object-cover glitch-layer glitch-layer-2"
+              style={{
+                opacity: 0.3,
+                mixBlendMode: 'lighten'
+              }}
+            />
+          </div>
           {/* Alignment indicator border */}
           <div
             className="absolute inset-0 pointer-events-none transition-all duration-300"
