@@ -1,0 +1,7 @@
+{
+  "name": "Dreamcore Concrete Life",
+  "description": "A camera-based web game where you discover life within concrete. Uses Gemini Vision to detect surfaces and Three.js to grow point-cloud plants.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
