@@ -13,6 +13,7 @@ export default defineConfig(() => ({
     host: '0.0.0.0',
   },
   envDir: projectRoot,
+  publicDir: path.resolve(projectRoot, 'sequence'),
   build: {
     outDir: '../dist',
     emptyOutDir: true,
