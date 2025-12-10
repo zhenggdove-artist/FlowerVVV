@@ -23,3 +23,7 @@ Source lives in `docs/src`. Run `npm run bundle` from `docs/` to:
 2) copy the built assets + `index.html` into `docs/` for Pages hosting.
 
 Commit `docs/index.html` and `docs/assets/**` to deploy. `docs/dist/` stays ignored.
+
+GitHub Pages 設定建議：
+- 如果 Source 設為 `main` + `/docs`，直接部署即可。
+- 如果 Source 設為 `main`（根目錄），我們在根目錄放了 `index.html` 會自動導向 `docs/index.html`。
