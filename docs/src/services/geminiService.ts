@@ -11,31 +11,14 @@ const analysisSchema = {
   required: ["detected", "box_2d", "confidence", "label"],
 } as const;
 
-const DEFAULT_PROXY = 'https://royal-base-184.wufu104.workers.dev';
-
-// 取得代理網址：query (?proxy=) > localStorage(PROXY_URL) > window.PROXY_URL > env > DEFAULT_PROXY
-const resolveProxyUrl = () => {
-  const isBrowser = typeof window !== 'undefined';
-  let queryProxy = '';
-  if (isBrowser) {
-    const qp = new URLSearchParams(window.location.search);
-    queryProxy = qp.get('proxy') || qp.get('api') || '';
-    if (queryProxy) {
-      window.localStorage.setItem('PROXY_URL', queryProxy);
-    }
-  }
-  const stored = isBrowser ? window.localStorage.getItem('PROXY_URL') || '' : '';
-  const fromWindow = isBrowser ? (window as any).PROXY_URL || '' : '';
-  const fromEnv = (import.meta as any).env?.VITE_PROXY_URL || '';
-  return queryProxy || stored || fromWindow || fromEnv || DEFAULT_PROXY;
-};
+// 固定代理網址，避免環境或快取導致沒發出請求
+const PROXY_URL = 'https://royal-base-184.wufu104.workers.dev';
 
 export const analyzeImage = async (base64Image: string): Promise<AnalysisResult> => {
   try {
     const cleanBase64 = base64Image.replace(/^data:image\/(png|jpeg|jpg);base64,/, "");
-    const proxyUrl = resolveProxyUrl();
 
-    const resp = await fetch(proxyUrl, {
+    const resp = await fetch(PROXY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ image: cleanBase64 }),
