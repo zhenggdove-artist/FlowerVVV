@@ -77,8 +77,17 @@ const App: React.FC = () => {
         
         try {
             const result = await analyzeImage(base64);
+
+            // 🔍 調試：打印實際收到的數據
+            console.log("=== API Response ===");
+            console.log("Detected:", result.detected);
+            console.log("Box 2D:", result.box_2d);
+            console.log("Confidence:", result.confidence);
+            console.log("Label:", result.label);
+            console.log("==================");
+
             setAnalysisResult(result);
-            
+
             if (result.detected) {
                 setStatusText("");
                 setGameState(GameState.GROWING);

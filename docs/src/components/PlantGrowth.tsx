@@ -112,17 +112,30 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
       const box = analysis.box_2d; // [ymin, xmin, ymax, xmax] 0-1000 relative to source image
 
+      // 🔍 調試：打印收到的 box 和圖片尺寸
+      console.log("=== PlantGrowth Debug ===");
+      console.log("Original Box (0-1000):", box);
+      console.log("Image size:", img.width, "x", img.height);
+      console.log("Canvas size:", width, "x", height);
+      console.log("Scale:", scale);
+      console.log("Offset:", offsetX, offsetY);
+
       // Map 0-1000 box to Image Pixels
       const imgYmin = (box[0] / 1000) * img.height;
       const imgXmin = (box[1] / 1000) * img.width;
       const imgYmax = (box[2] / 1000) * img.height;
       const imgXmax = (box[3] / 1000) * img.width;
 
+      console.log("Image pixels:", { imgYmin, imgXmin, imgYmax, imgXmax });
+
       // Map Image Pixels to Canvas Coordinates
       const cXmin = offsetX + imgXmin * scale;
       const cYmin = offsetY + imgYmin * scale;
       const cXmax = offsetX + imgXmax * scale;
       const cYmax = offsetY + imgYmax * scale;
+
+      console.log("Canvas coords:", { cXmin, cYmin, cXmax, cYmax });
+      console.log("========================");
 
       // Convert to Safe Integers for getImageData
       const sx = Math.max(0, Math.floor(cXmin)) | 0;
