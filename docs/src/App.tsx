@@ -1,10 +1,12 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import DreamOverlay from './components/DreamOverlay.tsx';
 import PlantGrowth from './components/PlantGrowth.tsx';
+import MaskedGlitchEffect from './components/MaskedGlitchEffect.tsx';
 import { GameState, AnalysisResult } from './types.ts';
 
 // Use relative path for better compatibility with GitHub Pages
 const referenceImage = './01.jpg';
+const maskImage = './02.jpg';
 
 const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -15,7 +17,7 @@ const App: React.FC = () => {
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [statusText, setStatusText] = useState<string>("");
+  const [statusText, setStatusText] = useState<string>("Initializing camera...");
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [isAligned, setIsAligned] = useState<boolean>(false);
@@ -56,6 +58,9 @@ const App: React.FC = () => {
   useEffect(() => {
     const startCamera = async () => {
       try {
+        console.log("Starting camera...");
+        setStatusText("Starting camera...");
+
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'environment',
@@ -64,8 +69,15 @@ const App: React.FC = () => {
           },
           audio: false
         });
+
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+
+          // Wait for video to be ready
+          videoRef.current.onloadedmetadata = () => {
+            console.log("Camera ready! Starting alignment detection...");
+            setStatusText("Camera ready - Align with reference image");
+          };
         }
       } catch (err) {
         console.error("Camera access denied:", err);
@@ -76,10 +88,14 @@ const App: React.FC = () => {
     startCamera();
   }, []);
 
-  // Check alignment between video feed and reference image
+  // Check alignment between video feed and reference image - RUNS CONTINUOUSLY FROM START
   useEffect(() => {
-    if (gameState !== GameState.IDLE || !videoRef.current || !comparisonCanvasRef.current) return;
+    // Only run alignment check when in IDLE state (before capture)
+    if (gameState !== GameState.IDLE) return;
+    if (!videoRef.current || !comparisonCanvasRef.current) return;
     if (!referenceImageDataRef.current) return; // Wait for reference image to load
+
+    console.log("Starting continuous alignment detection...");
 
     const checkAlignment = () => {
       const video = videoRef.current;
@@ -123,9 +139,6 @@ const App: React.FC = () => {
       // Typical range: avgDiff can be 0-255
       const similarity = Math.max(0, 100 - (avgDiff / 255) * 100);
 
-      // Debug logging
-      console.log(`Similarity: ${similarity.toFixed(2)}%, Avg Diff: ${avgDiff.toFixed(2)}`);
-
       setSimilarityScore(similarity);
 
       // More strict threshold: 85% similarity required
@@ -139,7 +152,11 @@ const App: React.FC = () => {
       }
     };
 
-    const intervalId = setInterval(checkAlignment, 500); // Check every 500ms
+    // Run immediately on mount
+    checkAlignment();
+
+    // Then check every 500ms
+    const intervalId = setInterval(checkAlignment, 500);
     return () => clearInterval(intervalId);
   }, [gameState, referenceImageDataRef.current]);
 
@@ -225,38 +242,29 @@ const App: React.FC = () => {
         }}
       />
 
-      {/* --- LAYER 1.5: REFERENCE IMAGE OVERLAY (30% opacity) WITH GLITCH --- */}
+      {/* --- LAYER 1.5: REFERENCE IMAGE OVERLAY (30% opacity) --- */}
       {!capturedImage && gameState === GameState.IDLE && (
         <>
-          <div className="absolute top-0 left-0 w-full h-full pointer-events-none glitch-container">
-            <img
-              src={referenceImage}
-              alt="Reference"
-              className="absolute top-0 left-0 w-full h-full object-cover glitch-image"
-              style={{
-                opacity: 0.3,
-                mixBlendMode: 'lighten'
-              }}
-            />
-            <img
-              src={referenceImage}
-              alt="Reference Glitch 1"
-              className="absolute top-0 left-0 w-full h-full object-cover glitch-layer glitch-layer-1"
-              style={{
-                opacity: 0.3,
-                mixBlendMode: 'lighten'
-              }}
-            />
-            <img
-              src={referenceImage}
-              alt="Reference Glitch 2"
-              className="absolute top-0 left-0 w-full h-full object-cover glitch-layer glitch-layer-2"
-              style={{
-                opacity: 0.3,
-                mixBlendMode: 'lighten'
-              }}
-            />
-          </div>
+          {/* Base reference image overlay */}
+          <img
+            src={referenceImage}
+            alt="Reference"
+            className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none"
+            style={{
+              opacity: 0.3,
+              mixBlendMode: 'lighten'
+            }}
+          />
+
+          {/* Masked Glitch Effect - only on red region */}
+          <MaskedGlitchEffect
+            baseImage={referenceImage}
+            maskImage={maskImage}
+            width={viewport.width}
+            height={viewport.height}
+            active={true}
+          />
+
           {/* Alignment indicator border */}
           <div
             className="absolute inset-0 pointer-events-none transition-all duration-300"
