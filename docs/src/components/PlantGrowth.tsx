@@ -23,6 +23,12 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ active, growthTrigger, width,
     []
   );
 
+  // Preload first frame to avoid blank on start
+  useEffect(() => {
+    const img = new Image();
+    img.src = frames[0];
+  }, [frames]);
+
   useEffect(() => {
     if (!active) {
       cancelAnimationFrame(rafRef.current || 0);

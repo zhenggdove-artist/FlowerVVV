@@ -90,8 +90,9 @@ const App: React.FC = () => {
             }
 
         } catch (e) {
-            setStatusText("CONNECTION LOST.");
-            setGameState(GameState.ERROR);
+            setStatusText("OFFLINE MODE - USING LOCAL GROWTH");
+            setGameState(GameState.GROWING);
+            setGrowthTrigger(prev => prev + 1);
         }
     } 
     // IF ALREADY GROWING: Add more plants
