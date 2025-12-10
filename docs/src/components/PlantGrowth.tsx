@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { AnalysisResult } from '../types.ts';
 
+const maskImage = '/02.jpg';
+
 interface PlantGrowthProps {
   analysis: AnalysisResult | null;
   capturedImage: string | null;
@@ -88,14 +90,15 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
   const startTimeRef = useRef<number>(Date.now());
 
-  // --- IMAGE PROCESSING: EDGE & SURFACE DETECTION ---
+  // --- IMAGE PROCESSING: RED MASK DETECTION ---
   useEffect(() => {
     if (!capturedImage || !analysis || !active) return;
 
     const processImage = async () => {
-      const img = new Image();
-      img.src = capturedImage;
-      await new Promise((resolve) => { img.onload = resolve; });
+      // Load the mask image (02.jpg with red area)
+      const maskImg = new Image();
+      maskImg.src = maskImage;
+      await new Promise((resolve) => { maskImg.onload = resolve; });
 
       const canvas = document.createElement('canvas');
       canvas.width = width;
@@ -104,100 +107,60 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
       if (!ctx) return;
 
       // Calculate object-cover scaling to match CSS
-      const scale = Math.max(width / img.width, height / img.height);
-      const offsetX = (width - img.width * scale) / 2;
-      const offsetY = (height - img.height * scale) / 2;
+      const scale = Math.max(width / maskImg.width, height / maskImg.height);
+      const offsetX = (width - maskImg.width * scale) / 2;
+      const offsetY = (height - maskImg.height * scale) / 2;
 
-      ctx.drawImage(img, offsetX, offsetY, img.width * scale, img.height * scale);
+      // Draw mask image
+      ctx.drawImage(maskImg, offsetX, offsetY, maskImg.width * scale, maskImg.height * scale);
 
-      const box = analysis.box_2d; // [ymin, xmin, ymax, xmax] 0-1000 relative to source image
-
-      // 🔍 調試：打印收到的 box 和圖片尺寸
-      console.log("=== PlantGrowth Debug ===");
-      console.log("Original Box (0-1000):", box);
-      console.log("Image size:", img.width, "x", img.height);
+      console.log("=== PlantGrowth Debug (Mask Mode) ===");
+      console.log("Mask Image size:", maskImg.width, "x", maskImg.height);
       console.log("Canvas size:", width, "x", height);
       console.log("Scale:", scale);
       console.log("Offset:", offsetX, offsetY);
 
-      // Map 0-1000 box to Image Pixels
-      const imgYmin = (box[0] / 1000) * img.height;
-      const imgXmin = (box[1] / 1000) * img.width;
-      const imgYmax = (box[2] / 1000) * img.height;
-      const imgXmax = (box[3] / 1000) * img.width;
-
-      console.log("Image pixels:", { imgYmin, imgXmin, imgYmax, imgXmax });
-
-      // Map Image Pixels to Canvas Coordinates
-      const cXmin = offsetX + imgXmin * scale;
-      const cYmin = offsetY + imgYmin * scale;
-      const cXmax = offsetX + imgXmax * scale;
-      const cYmax = offsetY + imgYmax * scale;
-
-      console.log("Canvas coords:", { cXmin, cYmin, cXmax, cYmax });
-      console.log("========================");
-
-      // Convert to Safe Integers for getImageData
-      const sx = Math.max(0, Math.floor(cXmin)) | 0;
-      const sy = Math.max(0, Math.floor(cYmin)) | 0;
-      const ex = Math.min(width, Math.ceil(cXmax)) | 0;
-      const ey = Math.min(height, Math.ceil(cYmax)) | 0;
-
-      const sw = (ex - sx) | 0;
-      const sh = (ey - sy) | 0;
-
-      if (sw <= 0 || sh <= 0) return;
-
       try {
-        const imageData = ctx.getImageData(sx, sy, sw, sh);
+        const imageData = ctx.getImageData(0, 0, width, height);
         const data = imageData.data;
-        const w = imageData.width;
 
         const ePoints: number[] = [];
         const sPoints: number[] = [];
-        const threshold = 30; // Sensitivity
 
-        // Loop with safety padding
-        for (let py = 1; py < sh - 1; py += 2) {
-            for (let px = 1; px < sw - 1; px += 2) {
-                const idx = (py * w + px) * 4;
-                const gray = (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                
-                const idxR = (py * w + (px+1)) * 4;
-                const grayR = (data[idxR] + data[idxR+1] + data[idxR+2]) / 3;
+        // Detect red pixels in the mask (RGB where R > 200, G < 100, B < 100)
+        for (let py = 0; py < height; py += 3) {
+            for (let px = 0; px < width; px += 3) {
+                const idx = (py * width + px) * 4;
+                const r = data[idx];
+                const g = data[idx + 1];
+                const b = data[idx + 2];
 
-                const idxB = ((py+1) * w + px) * 4;
-                const grayB = (data[idxB] + data[idxB+1] + data[idxB+2]) / 3;
+                // Check if pixel is red
+                if (r > 200 && g < 100 && b < 100) {
+                    const threeX = px - (width / 2);
+                    const threeY = (height / 2) - py;
 
-                const magnitude = Math.abs(gray - grayR) + Math.abs(gray - grayB);
-
-                // Check for edges
-                if (magnitude > threshold) {
-                    const screenX = sx + px;
-                    const screenY = sy + py;
-                    const threeX = screenX - (width / 2);
-                    const threeY = (height / 2) - screenY;
-                    ePoints.push(threeX, threeY);
-                } 
-                // Check for surface (random sampling of non-edges)
-                else if (Math.random() < 0.02) { // 2% chance to keep surface point to save memory
-                    const screenX = sx + px;
-                    const screenY = sy + py;
-                    const threeX = screenX - (width / 2);
-                    const threeY = (height / 2) - screenY;
-                    sPoints.push(threeX, threeY);
+                    // Randomly assign to edge or surface
+                    if (Math.random() < 0.3) {
+                        ePoints.push(threeX, threeY);
+                    } else {
+                        sPoints.push(threeX, threeY);
+                    }
                 }
             }
         }
 
+        console.log("Red mask points - Edges:", ePoints.length / 2, "Surface:", sPoints.length / 2);
+        console.log("======================================");
+
         edgePointsRef.current = new Float32Array(ePoints);
         edgeCountRef.current = ePoints.length / 2;
-        
+
         surfacePointsRef.current = new Float32Array(sPoints);
         surfaceCountRef.current = sPoints.length / 2;
 
       } catch (e) {
-        console.error("Edge detection failed", e);
+        console.error("Mask detection failed", e);
       }
     };
 
