@@ -165,7 +165,7 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       const time = timeRef.current;
 
       // 波浪晃動參數
-      const waveSpeed = 0.5;        // 波浪速度 (數值越小越慢)
+      const waveSpeed = 0.3;        // 波浪速度 (數值越小越慢)
       const waveAmplitude = 6;      // 波浪幅度 (晃動範圍，像素)
       const waveFrequency = 0.02;   // 波浪頻率 (數值越小波浪越平緩)
 
@@ -174,7 +174,7 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       const rgbSeparationMax = 25;  // 最大色彩分離 (突波時)
 
       // GLITCH突波參數
-      const burstIntensity = 20;    // 突波強度
+      const burstIntensity = 2;    // 突波強度
       const burstProbability = 0.08; // 突波機率 (降低頻率)
       // ========================================
 
@@ -190,7 +190,7 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
 
         // 偶爾的GLITCH突波
         const hasBurst = Math.random() < burstProbability;
-        const burstOffset = hasBurst ? (Math.random() - 0.5) * 2 * burstIntensity : 0;
+        const burstOffset = hasBurst ? (Math.random() - 0.1) * 2 * burstIntensity : 0;
 
         // 組合位移
         const displacement = Math.floor(wave + burstOffset);
