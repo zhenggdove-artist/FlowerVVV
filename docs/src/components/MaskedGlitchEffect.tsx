@@ -177,7 +177,12 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       const rgbSeparation = Math.sin(time * 4) * 6; // 原本: Math.sin(time * 3) * 4
       // ========================================
 
-      // Apply wave distortion ONLY to masked pixels
+      // Clear all to transparent first
+      for (let i = 0; i < data.length; i += 4) {
+        data[i + 3] = 0;
+      }
+
+      // Apply wave distortion - "push" pixels from mask outward
       for (let y = 0; y < height; y++) {
         // Calculate wave displacement for this row
         const wave = Math.sin(y * waveFrequency + time * waveSpeed) * waveAmplitude;
@@ -191,26 +196,35 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
         for (let x = 0; x < width; x++) {
           const idx = y * width + x;
 
-          // Only apply effect to masked region
+          // Only process pixels FROM masked region
           if (maskBuffer[idx] === 1) {
-            const i = idx * 4;
+            // Push this pixel to displaced positions (can go outside mask)
+            const targetXRed = x + redOffset;
+            const targetXGreen = x + greenOffset;
+            const targetXBlue = x + blueOffset;
 
-            // Apply RGB channel separation with wave displacement
-            const sourceXRed = Math.max(0, Math.min(width - 1, x + redOffset));
-            const sourceXGreen = Math.max(0, Math.min(width - 1, x + greenOffset));
-            const sourceXBlue = Math.max(0, Math.min(width - 1, x + blueOffset));
+            const sourceIdx = idx * 4;
 
-            const idxRed = (y * width + sourceXRed) * 4;
-            const idxGreen = (y * width + sourceXGreen) * 4;
-            const idxBlue = (y * width + sourceXBlue) * 4;
+            // Draw red channel
+            if (targetXRed >= 0 && targetXRed < width) {
+              const targetIdxRed = (y * width + targetXRed) * 4;
+              data[targetIdxRed] = originalData[sourceIdx];
+              data[targetIdxRed + 3] = 255; // Make visible
+            }
 
-            // Apply glitch effect regardless of source position
-            data[i] = originalData[idxRed];
-            data[i + 1] = originalData[idxGreen + 1];
-            data[i + 2] = originalData[idxBlue + 2];
-          } else {
-            // Outside mask: make transparent
-            data[idx * 4 + 3] = 0;
+            // Draw green channel
+            if (targetXGreen >= 0 && targetXGreen < width) {
+              const targetIdxGreen = (y * width + targetXGreen) * 4;
+              data[targetIdxGreen + 1] = originalData[sourceIdx + 1];
+              data[targetIdxGreen + 3] = 255; // Make visible
+            }
+
+            // Draw blue channel
+            if (targetXBlue >= 0 && targetXBlue < width) {
+              const targetIdxBlue = (y * width + targetXBlue) * 4;
+              data[targetIdxBlue + 2] = originalData[sourceIdx + 2];
+              data[targetIdxBlue + 3] = 255; // Make visible
+            }
           }
         }
       }
