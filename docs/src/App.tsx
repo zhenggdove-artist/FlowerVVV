@@ -18,13 +18,17 @@ const App: React.FC = () => {
   const comparisonCanvasRef = useRef<HTMLCanvasElement>(null);
   const referenceImageRef = useRef<HTMLImageElement | null>(null);
   const referenceImageDataRef = useRef<ImageData | null>(null);
+  const referenceGrayRef = useRef<Float32Array | null>(null);
+  const referenceGrayFlippedRef = useRef<Float32Array | null>(null);
+  const referenceMeanRef = useRef<number>(0);
+  const referenceMeanFlippedRef = useRef<number>(0);
   const similarityHistoryRef = useRef<number[]>([]);
   const [isReferenceReady, setIsReferenceReady] = useState<boolean>(false);
   const [compareSize, setCompareSize] = useState<{ width: number; height: number }>({ width: 160, height: 120 });
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [statusText, setStatusText] = useState<string>("Initializing camera...");
+  const [statusText, setStatusText] = useState<string>("Align camera to reference image");
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [isAligned, setIsAligned] = useState<boolean>(false);
@@ -63,6 +67,30 @@ const App: React.FC = () => {
         const offsetY = (targetHeight - img.height * scale) / 2;
         ctx.drawImage(img, offsetX, offsetY, img.width * scale, img.height * scale);
         referenceImageDataRef.current = ctx.getImageData(0, 0, targetWidth, targetHeight);
+
+        // Pre-compute grayscale arrays for normal and mirrored reference
+        const gray = new Float32Array(targetWidth * targetHeight);
+        const grayFlipped = new Float32Array(targetWidth * targetHeight);
+        let sum = 0;
+        let sumFlipped = 0;
+        const data = referenceImageDataRef.current.data;
+        for (let y = 0; y < targetHeight; y++) {
+          for (let x = 0; x < targetWidth; x++) {
+            const idx = (y * targetWidth + x) * 4;
+            const val = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+            gray[y * targetWidth + x] = val;
+            sum += val;
+
+            const flipX = targetWidth - 1 - x;
+            grayFlipped[y * targetWidth + flipX] = val;
+            sumFlipped += val;
+          }
+        }
+        referenceGrayRef.current = gray;
+        referenceGrayFlippedRef.current = grayFlipped;
+        referenceMeanRef.current = sum / gray.length;
+        referenceMeanFlippedRef.current = sumFlipped / grayFlipped.length;
+
         setCompareSize({ width: targetWidth, height: targetHeight });
         console.log("Reference image loaded and processed");
         setIsReferenceReady(true);
@@ -76,8 +104,6 @@ const App: React.FC = () => {
     const startCamera = async () => {
       try {
         console.log("Starting camera...");
-        setStatusText("Starting camera...");
-
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'environment',
@@ -89,12 +115,6 @@ const App: React.FC = () => {
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-
-          // Wait for video to be ready
-          videoRef.current.onloadedmetadata = () => {
-            console.log("Camera ready! Starting alignment detection...");
-            setStatusText("Camera ready - Align with reference image");
-          };
         }
       } catch (err) {
         console.error("Camera access denied:", err);
@@ -121,6 +141,7 @@ const App: React.FC = () => {
       const refData = referenceImageDataRef.current;
 
       if (!video || !canvas || !refData || video.videoWidth === 0) return;
+      if (!referenceGrayRef.current || !referenceGrayFlippedRef.current) return;
 
       canvas.width = compareSize.width;
       canvas.height = compareSize.height;
@@ -134,47 +155,57 @@ const App: React.FC = () => {
       ctx.drawImage(video, offsetX, offsetY, video.videoWidth * scale, video.videoHeight * scale);
       const videoData = ctx.getImageData(0, 0, compareSize.width, compareSize.height);
 
-      // Calculate brightness-normalized difference to reduce lighting sensitivity
+      // Convert to grayscale array
+      const videoGray = new Float32Array(compareSize.width * compareSize.height);
       let videoSum = 0;
-      let refSum = 0;
       const pixelCount = videoData.data.length / 4;
 
       for (let i = 0; i < videoData.data.length; i += 4) {
         // Convert to grayscale for comparison
-        const videoGray = (videoData.data[i] + videoData.data[i + 1] + videoData.data[i + 2]) / 3;
-        const refGray = (refData.data[i] + refData.data[i + 1] + refData.data[i + 2]) / 3;
-        videoSum += videoGray;
-        refSum += refGray;
+        const videoGrayVal = (videoData.data[i] + videoData.data[i + 1] + videoData.data[i + 2]) / 3;
+        const idx = i / 4;
+        videoGray[idx] = videoGrayVal;
+        videoSum += videoGrayVal;
       }
 
       const videoMean = videoSum / pixelCount;
-      const refMean = refSum / pixelCount;
 
-      let totalDiff = 0;
-      for (let i = 0; i < videoData.data.length; i += 4) {
-        const videoGray = (videoData.data[i] + videoData.data[i + 1] + videoData.data[i + 2]) / 3 - videoMean;
-        const refGray = (refData.data[i] + refData.data[i + 1] + refData.data[i + 2]) / 3 - refMean;
-        const diff = Math.abs(videoGray - refGray);
-        totalDiff += diff;
-      }
+      const computeNCC = (
+        videoArr: Float32Array,
+        videoMeanVal: number,
+        refArr: Float32Array,
+        refMeanVal: number
+      ) => {
+        let dot = 0;
+        let vVar = 0;
+        let rVar = 0;
+        for (let i = 0; i < videoArr.length; i++) {
+          const v = videoArr[i] - videoMeanVal;
+          const r = refArr[i] - refMeanVal;
+          dot += v * r;
+          vVar += v * v;
+          rVar += r * r;
+        }
+        if (vVar === 0 || rVar === 0) return -1;
+        return dot / Math.sqrt(vVar * rVar);
+      };
 
-      // Average difference per pixel
-      const avgDiff = totalDiff / pixelCount;
+      const simNormal = computeNCC(videoGray, videoMean, referenceGrayRef.current, referenceMeanRef.current);
+      const simFlipped = computeNCC(videoGray, videoMean, referenceGrayFlippedRef.current, referenceMeanFlippedRef.current);
+      const bestSim = Math.max(simNormal, simFlipped);
 
-      // Convert to similarity percentage (0-100)
-      // Lower difference = higher similarity
-      // Typical range: avgDiff can be 0-255 (after normalization still within)
-      const similarity = Math.max(0, 100 - (avgDiff / 255) * 100);
+      // Convert -1..1 to 0..100
+      const similarity = Math.max(0, Math.min(100, (bestSim + 1) * 50));
 
       // Smooth similarity to avoid jitter
       similarityHistoryRef.current.push(similarity);
-      if (similarityHistoryRef.current.length > 5) similarityHistoryRef.current.shift();
+      if (similarityHistoryRef.current.length > 7) similarityHistoryRef.current.shift();
       const smoothed = similarityHistoryRef.current.reduce((a, b) => a + b, 0) / similarityHistoryRef.current.length;
 
       setSimilarityScore(smoothed);
 
-      // Slightly relaxed threshold to account for camera noise
-      const threshold = 75;
+      // Relaxed threshold to make alignment achievable
+      const threshold = 65;
       setIsAligned(smoothed >= threshold);
 
       if (smoothed >= threshold) {
