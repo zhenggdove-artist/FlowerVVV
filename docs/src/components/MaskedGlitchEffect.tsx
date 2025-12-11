@@ -275,7 +275,7 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       ref={canvasRef}
       className="absolute top-0 left-0 w-full h-full pointer-events-none"
       style={{
-        opacity: 0.3, // 🎛️ Glitch透明度 (0.0-1.0)
+        opacity: 0.5, // 🎛️ Glitch透明度 (0.0-1.0)
         zIndex: 10
       }}
     />
