@@ -292,11 +292,12 @@ const App: React.FC = () => {
 
       setSimilarityScore(smoothed);
 
-      // Relaxed threshold to make alignment achievable
-      const threshold = 40;
-      setIsAligned(smoothed >= threshold);
+      // Require stronger match (NCC ~0.5 -> similarity ~75)
+      const threshold = 75;
+      const alignedNow = smoothed >= threshold;
+      setIsAligned(alignedNow);
 
-      if (smoothed >= threshold) {
+      if (alignedNow) {
         setStatusText(`ALIGNED ${smoothed.toFixed(0)}% - TAP TO CAPTURE`);
       } else {
         setStatusText(`Align camera: ${smoothed.toFixed(0)}%`);
