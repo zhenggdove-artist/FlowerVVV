@@ -22,6 +22,9 @@ const App: React.FC = () => {
   const referenceGrayFlippedRef = useRef<Float32Array | null>(null);
   const referenceMeanRef = useRef<number>(0);
   const referenceMeanFlippedRef = useRef<number>(0);
+  const maskBufferRef = useRef<Uint8Array | null>(null);
+  const maskBufferFlippedRef = useRef<Uint8Array | null>(null);
+  const maskCoverageRef = useRef<number>(0);
   const similarityHistoryRef = useRef<number[]>([]);
   const [isReferenceReady, setIsReferenceReady] = useState<boolean>(false);
   const [compareSize, setCompareSize] = useState<{ width: number; height: number }>({ width: 160, height: 120 });
@@ -46,57 +49,124 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Preload reference image
+  // Preload reference + mask images
   useEffect(() => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      referenceImageRef.current = img;
+    let cancelled = false;
 
-      // Pre-process reference image data
-      const canvas = document.createElement('canvas');
-      const targetWidth = 200; // Base width for comparison, height follows aspect ratio
-      const targetHeight = Math.round(targetWidth * (img.height / img.width));
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        // Draw with object-cover style to avoid aspect distortion
-        const scale = Math.min(targetWidth / img.width, targetHeight / img.height);
-        const offsetX = (targetWidth - img.width * scale) / 2;
-        const offsetY = (targetHeight - img.height * scale) / 2;
-        ctx.drawImage(img, offsetX, offsetY, img.width * scale, img.height * scale);
-        referenceImageDataRef.current = ctx.getImageData(0, 0, targetWidth, targetHeight);
+    const loadImage = (src: string) => {
+      return new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => resolve(img);
+        img.onerror = (err) => reject(err);
+        img.src = src;
+      });
+    };
 
-        // Pre-compute grayscale arrays for normal and mirrored reference
-        const gray = new Float32Array(targetWidth * targetHeight);
-        const grayFlipped = new Float32Array(targetWidth * targetHeight);
-        let sum = 0;
-        let sumFlipped = 0;
-        const data = referenceImageDataRef.current.data;
-        for (let y = 0; y < targetHeight; y++) {
-          for (let x = 0; x < targetWidth; x++) {
-            const idx = (y * targetWidth + x) * 4;
-            const val = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
-            gray[y * targetWidth + x] = val;
-            sum += val;
+    const bootstrapReference = async () => {
+      try {
+        const [img, mask] = await Promise.all([
+          loadImage(referenceImage),
+          loadImage(maskImage)
+        ]);
+        if (cancelled) return;
 
-            const flipX = targetWidth - 1 - x;
-            grayFlipped[y * targetWidth + flipX] = val;
-            sumFlipped += val;
-          }
-        }
-        referenceGrayRef.current = gray;
-        referenceGrayFlippedRef.current = grayFlipped;
-        referenceMeanRef.current = sum / gray.length;
-        referenceMeanFlippedRef.current = sumFlipped / grayFlipped.length;
+        referenceImageRef.current = img;
 
+        const targetWidth = 200; // Base width for comparison, height follows aspect ratio
+        const targetHeight = Math.round(targetWidth * (img.height / img.width));
         setCompareSize({ width: targetWidth, height: targetHeight });
-        console.log("Reference image loaded and processed");
+
+        // --- Reference image pre-processing ---
+        const canvas = document.createElement('canvas');
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (ctx) {
+          // Use object-cover style to avoid aspect distortion
+          const scale = Math.min(targetWidth / img.width, targetHeight / img.height);
+          const offsetX = (targetWidth - img.width * scale) / 2;
+          const offsetY = (targetHeight - img.height * scale) / 2;
+          ctx.drawImage(img, offsetX, offsetY, img.width * scale, img.height * scale);
+          referenceImageDataRef.current = ctx.getImageData(0, 0, targetWidth, targetHeight);
+
+          const gray = new Float32Array(targetWidth * targetHeight);
+          const grayFlipped = new Float32Array(targetWidth * targetHeight);
+          let sum = 0;
+          let sumFlipped = 0;
+          const data = referenceImageDataRef.current.data;
+          for (let y = 0; y < targetHeight; y++) {
+            for (let x = 0; x < targetWidth; x++) {
+              const idx = (y * targetWidth + x) * 4;
+              const val = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+              gray[y * targetWidth + x] = val;
+              sum += val;
+
+              const flipX = targetWidth - 1 - x;
+              grayFlipped[y * targetWidth + flipX] = val;
+              sumFlipped += val;
+            }
+          }
+          referenceGrayRef.current = gray;
+          referenceGrayFlippedRef.current = grayFlipped;
+          referenceMeanRef.current = sum / gray.length;
+          referenceMeanFlippedRef.current = sumFlipped / grayFlipped.length;
+        }
+
+        // --- Mask pre-processing (use the red area as ROI for matching) ---
+        const maskCanvas = document.createElement('canvas');
+        maskCanvas.width = targetWidth;
+        maskCanvas.height = targetHeight;
+        const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+        if (maskCtx) {
+          const scaleMask = Math.max(targetWidth / mask.width, targetHeight / mask.height);
+          const maskOffsetX = (targetWidth - mask.width * scaleMask) / 2;
+          const maskOffsetY = (targetHeight - mask.height * scaleMask) / 2;
+          maskCtx.drawImage(mask, maskOffsetX, maskOffsetY, mask.width * scaleMask, mask.height * scaleMask);
+
+          const maskData = maskCtx.getImageData(0, 0, targetWidth, targetHeight).data;
+          const maskBuffer = new Uint8Array(targetWidth * targetHeight);
+          const maskBufferFlipped = new Uint8Array(targetWidth * targetHeight);
+          let maskCount = 0;
+
+          for (let y = 0; y < targetHeight; y++) {
+            for (let x = 0; x < targetWidth; x++) {
+              const idx = (y * targetWidth + x) * 4;
+              const r = maskData[idx];
+              const g = maskData[idx + 1];
+              const b = maskData[idx + 2];
+
+              if (r > 180 && g < 100 && b < 100) {
+                const flatIdx = y * targetWidth + x;
+                maskBuffer[flatIdx] = 1;
+                const flipX = targetWidth - 1 - x;
+                maskBufferFlipped[y * targetWidth + flipX] = 1;
+                maskCount++;
+              }
+            }
+          }
+
+          maskBufferRef.current = maskBuffer;
+          maskBufferFlippedRef.current = maskBufferFlipped;
+          maskCoverageRef.current = maskCount;
+
+          console.log(`Mask processed: ${maskCount} ROI pixels (${((maskCount / (targetWidth * targetHeight)) * 100).toFixed(1)}%)`);
+        }
+
+        console.log("Reference and mask loaded and processed");
         setIsReferenceReady(true);
+      } catch (err) {
+        console.error("Failed to load reference/mask images", err);
+        setStatusText("IMAGE LOAD ERROR");
+        setGameState(GameState.ERROR);
       }
     };
-    img.src = referenceImage;
+
+    bootstrapReference();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Initialize Camera
@@ -148,8 +218,9 @@ const App: React.FC = () => {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // Draw current video frame
-      const scale = Math.min(compareSize.width / video.videoWidth, compareSize.height / video.videoHeight);
+      // Draw current video frame using object-cover scaling (avoid letterboxing).
+      ctx.clearRect(0, 0, compareSize.width, compareSize.height);
+      const scale = Math.max(compareSize.width / video.videoWidth, compareSize.height / video.videoHeight);
       const offsetX = (compareSize.width - video.videoWidth * scale) / 2;
       const offsetY = (compareSize.height - video.videoHeight * scale) / 2;
       ctx.drawImage(video, offsetX, offsetY, video.videoWidth * scale, video.videoHeight * scale);
@@ -157,31 +228,48 @@ const App: React.FC = () => {
 
       // Convert to grayscale array
       const videoGray = new Float32Array(compareSize.width * compareSize.height);
-      let videoSum = 0;
-      const pixelCount = videoData.data.length / 4;
-
       for (let i = 0; i < videoData.data.length; i += 4) {
-        // Convert to grayscale for comparison
         const videoGrayVal = (videoData.data[i] + videoData.data[i + 1] + videoData.data[i + 2]) / 3;
         const idx = i / 4;
         videoGray[idx] = videoGrayVal;
-        videoSum += videoGrayVal;
       }
-
-      const videoMean = videoSum / pixelCount;
 
       const computeNCC = (
         videoArr: Float32Array,
-        videoMeanVal: number,
         refArr: Float32Array,
-        refMeanVal: number
+        maskArr?: Uint8Array | null
       ) => {
+        let vSum = 0;
+        let rSum = 0;
+        let count = 0;
+
+        if (maskArr) {
+          for (let i = 0; i < videoArr.length; i++) {
+            if (maskArr[i]) {
+              vSum += videoArr[i];
+              rSum += refArr[i];
+              count++;
+            }
+          }
+        } else {
+          count = videoArr.length;
+          for (let i = 0; i < videoArr.length; i++) {
+            vSum += videoArr[i];
+            rSum += refArr[i];
+          }
+        }
+
+        if (count === 0) return -1;
+        const vMean = vSum / count;
+        const rMean = rSum / count;
+
         let dot = 0;
         let vVar = 0;
         let rVar = 0;
         for (let i = 0; i < videoArr.length; i++) {
-          const v = videoArr[i] - videoMeanVal;
-          const r = refArr[i] - refMeanVal;
+          if (maskArr && !maskArr[i]) continue;
+          const v = videoArr[i] - vMean;
+          const r = refArr[i] - rMean;
           dot += v * r;
           vVar += v * v;
           rVar += r * r;
@@ -190,8 +278,8 @@ const App: React.FC = () => {
         return dot / Math.sqrt(vVar * rVar);
       };
 
-      const simNormal = computeNCC(videoGray, videoMean, referenceGrayRef.current, referenceMeanRef.current);
-      const simFlipped = computeNCC(videoGray, videoMean, referenceGrayFlippedRef.current, referenceMeanFlippedRef.current);
+      const simNormal = computeNCC(videoGray, referenceGrayRef.current, maskBufferRef.current);
+      const simFlipped = computeNCC(videoGray, referenceGrayFlippedRef.current, maskBufferFlippedRef.current);
       const bestSim = Math.max(simNormal, simFlipped);
 
       // Convert -1..1 to 0..100
