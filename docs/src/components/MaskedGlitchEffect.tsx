@@ -160,31 +160,22 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       const originalData = new Uint8ClampedArray(data);
 
       // ========================================
-      // 🎛️ GLITCH效果參數 - 增強版
+      // 🎛️ GLITCH效果參數 - 可在此調整
       // ========================================
       const time = timeRef.current;
 
-      // 抖動頻率控制 (降低更新速度，不要太規律)
-      const updateFrequency = 0.15; // 每秒更新次數
-      const timeStep = Math.floor(time * updateFrequency);
+      // 波浪晃動參數
+      const waveSpeed = 0.5;        // 波浪速度 (數值越小越慢)
+      const waveAmplitude = 6;      // 波浪幅度 (晃動範圍，像素)
+      const waveFrequency = 0.02;   // 波浪頻率 (數值越小波浪越平緩)
 
-      // 抖動幅度
-      const jitterAmplitude = 5;
+      // RGB色彩分離 (顏色錯位效果)
+      const rgbSeparationBase = 15; // 基礎色彩分離強度
+      const rgbSeparationMax = 25;  // 最大色彩分離 (突波時)
 
-      // 強烈突波 (增加GLITCH效果)
-      const burstIntensity = 20; // 大幅提高突波強度
-      const burstProbability = 0.25; // 提高突波機率
-
-      // RGB色彩分離 (大幅增強顏色錯位)
-      const rgbSeparationBase = 15; // 基礎色彩分離
-      const rgbSeparationMax = 25; // 最大色彩分離 (突波時)
-
-      // 隨機種子 (降低規律性)
-      const randomSeed = Math.sin(timeStep * 12.9898) * 43758.5453;
-      const seededRandom = () => {
-        const x = Math.sin(randomSeed * frameCount) * 10000;
-        return x - Math.floor(x);
-      };
+      // GLITCH突波參數
+      const burstIntensity = 20;    // 突波強度
+      const burstProbability = 0.08; // 突波機率 (降低頻率)
       // ========================================
 
       // Clear all to transparent first
@@ -192,20 +183,19 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
         data[i + 3] = 0;
       }
 
-      // Apply enhanced GLITCH effect - "push" pixels from mask outward
+      // Apply smooth wave + GLITCH effect - "push" pixels from mask outward
       for (let y = 0; y < height; y++) {
-        // 基礎隨機抖動 (使用timeStep降低規律性)
-        const rowSeed = (y + timeStep * 100) * 0.01;
-        const randomJitter = (Math.sin(rowSeed * 12.9898 + Math.cos(rowSeed * 78.233)) - 0.5) * 2 * jitterAmplitude;
+        // 平滑波浪晃動 (慢速、小幅度)
+        const wave = Math.sin(y * waveFrequency + time * waveSpeed) * waveAmplitude;
 
-        // 強烈突波 (大幅增加)
+        // 偶爾的GLITCH突波
         const hasBurst = Math.random() < burstProbability;
         const burstOffset = hasBurst ? (Math.random() - 0.5) * 2 * burstIntensity : 0;
 
-        // 組合抖動
-        const displacement = Math.floor(randomJitter + burstOffset);
+        // 組合位移
+        const displacement = Math.floor(wave + burstOffset);
 
-        // 大幅增強RGB色彩分離
+        // 強烈RGB色彩分離 (保持強烈的顏色錯位)
         const rgbSep = hasBurst ? rgbSeparationMax : rgbSeparationBase;
         const redOffset = displacement + Math.floor((Math.random() - 0.5) * 2 * rgbSep);
         const greenOffset = displacement + Math.floor((Math.random() - 0.5) * rgbSep * 0.5);
