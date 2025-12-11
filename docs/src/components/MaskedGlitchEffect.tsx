@@ -169,9 +169,23 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       const waveAmplitude = 6;      // 波浪幅度 (晃動範圍，像素)
       const waveFrequency = 0.02;   // 波浪頻率 (數值越小波浪越平緩)
 
-      // RGB色彩分離 (顏色錯位效果)
-      const rgbSeparationBase = 15; // 基礎色彩分離強度
-      const rgbSeparationMax = 25;  // 最大色彩分離 (突波時)
+      // ========== RGB色彩分離（顏色錯位效果）==========
+      // 說明：模擬類比訊號干擾，讓紅綠藍三色在不同位置顯示
+      //
+      // rgbSeparationBase: 基礎色彩分離強度（像素）
+      //   - 數值越大 = 紅藍綠三色分離越遠 = 彩虹邊緣越明顯
+      //   - 5  = 微弱錯位（幾乎看不出）
+      //   - 15 = 明顯錯位（當前值，可見彩色邊緣）
+      //   - 30 = 極端錯位（誇張的彩虹效果）
+      const rgbSeparationBase = 15;
+
+      // rgbSeparationMax: 突波時的最大色彩分離（像素）
+      //   - 在GLITCH突波發生時使用此值
+      //   - 數值越大 = 突波時顏色錯位越誇張
+      //   - 應該 > rgbSeparationBase 才有突波效果
+      //   - 25 = 當前值（突波時顏色大幅錯位）
+      //   - 40 = 極端突波（超誇張的顏色爆炸）
+      const rgbSeparationMax = 25;
 
       // GLITCH突波參數
       const burstIntensity = 2;    // 突波強度
@@ -195,8 +209,16 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
         // 組合位移
         const displacement = Math.floor(wave + burstOffset);
 
-        // 強烈RGB色彩分離 (保持強烈的顏色錯位)
+        // RGB色彩分離計算
+        // - 平常使用 rgbSeparationBase (15px)
+        // - 突波時使用 rgbSeparationMax (25px) 讓顏色錯位更誇張
         const rgbSep = hasBurst ? rgbSeparationMax : rgbSeparationBase;
+
+        // 三個顏色通道的位移量（創造顏色錯位效果）
+        // redOffset:   紅色往右偏移最多（±2倍rgbSep）-> 右側紅邊
+        // greenOffset: 綠色偏移較少（±0.5倍rgbSep）-> 中間綠色
+        // blueOffset:  藍色往左偏移最多（±2倍rgbSep）-> 左側藍邊
+        // 結果：物體邊緣會出現 藍-綠-物體-綠-紅 的彩虹光暈
         const redOffset = displacement + Math.floor((Math.random() - 0.5) * 2 * rgbSep);
         const greenOffset = displacement + Math.floor((Math.random() - 0.5) * rgbSep * 0.5);
         const blueOffset = displacement - Math.floor((Math.random() - 0.5) * 2 * rgbSep);
