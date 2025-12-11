@@ -260,7 +260,7 @@ const App: React.FC = () => {
             active={true}
           />
 
-          {/* Alignment indicator border */}
+          {/* Alignment indicator border - Red when not aligned, Green when aligned */}
           <div
             className="absolute inset-0 pointer-events-none transition-all duration-300"
             style={{
@@ -270,23 +270,6 @@ const App: React.FC = () => {
                 : '0 0 20px rgba(255, 0, 0, 0.5)',
             }}
           />
-
-          {/* ALIGNMENT STATUS - SUPER VISIBLE */}
-          <div className="absolute top-20 left-1/2 transform -translate-x-1/2 z-50 pointer-events-none">
-            <div className="bg-black/80 border-4 px-8 py-4 text-center"
-                 style={{
-                   borderColor: isAligned ? '#00FF00' : '#FF0000',
-                   boxShadow: isAligned ? '0 0 20px #00FF00' : '0 0 20px #FF0000'
-                 }}>
-              <div className="text-2xl font-bold tracking-wider"
-                   style={{ color: isAligned ? '#00FF00' : '#FF0000' }}>
-                {statusText}
-              </div>
-              <div className="text-sm mt-2" style={{ color: isAligned ? '#00FF00' : '#FF0000' }}>
-                {isAligned ? '✓ READY TO CAPTURE' : '✗ MOVE CAMERA TO ALIGN'}
-              </div>
-            </div>
-          </div>
         </>
       )}
 
