@@ -165,9 +165,9 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       const time = timeRef.current;
 
       // 波浪晃動參數
-      const waveSpeed = 0.3;        // 波浪速度 (數值越小越慢)
-      const waveAmplitude = 10;      // 波浪幅度 (晃動範圍，像素)
-      const waveFrequency = 0.1;   // 波浪頻率 (數值越小波浪越平緩)
+      const waveSpeed = 0.9;        // 波浪速度 (數值越小越慢)
+      const waveAmplitude = 3;      // 波浪幅度 (晃動範圍，像素)
+      const waveFrequency = 0.03;   // 波浪頻率 (數值越小波浪越平緩)
 
       // ========== RGB色彩分離（顏色錯位效果）==========
       // 說明：模擬類比訊號干擾，讓紅綠藍三色在不同位置顯示
@@ -177,7 +177,7 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       //   - 5  = 微弱錯位（幾乎看不出）
       //   - 15 = 明顯錯位（當前值，可見彩色邊緣）
       //   - 30 = 極端錯位（誇張的彩虹效果）
-      const rgbSeparationBase = 6;
+      const rgbSeparationBase = 20;
 
       // rgbSeparationMax: 突波時的最大色彩分離（像素）
       //   - 在GLITCH突波發生時使用此值
@@ -185,11 +185,11 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       //   - 應該 > rgbSeparationBase 才有突波效果
       //   - 25 = 當前值（突波時顏色大幅錯位）
       //   - 40 = 極端突波（超誇張的顏色爆炸）
-      const rgbSeparationMax = 25;
+      const rgbSeparationMax = 40;
 
       // GLITCH突波參數
       const burstIntensity = 2;    // 突波強度
-      const burstProbability = 0.08; // 突波機率 (降低頻率)
+      const burstProbability = 0.1; // 突波機率 (降低頻率)
       // ========================================
 
       // Clear all to transparent first
