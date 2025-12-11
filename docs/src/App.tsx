@@ -62,7 +62,7 @@ const App: React.FC = () => {
       const ctx = canvas.getContext('2d');
       if (ctx) {
         // Draw with object-cover style to avoid aspect distortion
-        const scale = Math.max(targetWidth / img.width, targetHeight / img.height);
+        const scale = Math.min(targetWidth / img.width, targetHeight / img.height);
         const offsetX = (targetWidth - img.width * scale) / 2;
         const offsetY = (targetHeight - img.height * scale) / 2;
         ctx.drawImage(img, offsetX, offsetY, img.width * scale, img.height * scale);
@@ -149,7 +149,7 @@ const App: React.FC = () => {
       if (!ctx) return;
 
       // Draw current video frame
-      const scale = Math.max(compareSize.width / video.videoWidth, compareSize.height / video.videoHeight);
+      const scale = Math.min(compareSize.width / video.videoWidth, compareSize.height / video.videoHeight);
       const offsetX = (compareSize.width - video.videoWidth * scale) / 2;
       const offsetY = (compareSize.height - video.videoHeight * scale) / 2;
       ctx.drawImage(video, offsetX, offsetY, video.videoWidth * scale, video.videoHeight * scale);
@@ -199,13 +199,13 @@ const App: React.FC = () => {
 
       // Smooth similarity to avoid jitter
       similarityHistoryRef.current.push(similarity);
-      if (similarityHistoryRef.current.length > 7) similarityHistoryRef.current.shift();
+      if (similarityHistoryRef.current.length > 5) similarityHistoryRef.current.shift();
       const smoothed = similarityHistoryRef.current.reduce((a, b) => a + b, 0) / similarityHistoryRef.current.length;
 
       setSimilarityScore(smoothed);
 
       // Relaxed threshold to make alignment achievable
-      const threshold = 65;
+      const threshold = 40;
       setIsAligned(smoothed >= threshold);
 
       if (smoothed >= threshold) {
