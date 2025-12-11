@@ -160,21 +160,31 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       const originalData = new Uint8ClampedArray(data);
 
       // ========================================
-      // 🎛️ TV雜訊抖動效果參數
+      // 🎛️ GLITCH效果參數 - 增強版
       // ========================================
       const time = timeRef.current;
 
-      // 抖動幅度 (縮小範圍，不要晃太遠)
-      const jitterAmplitude = 4; // 電視雜訊的小幅度抖動
+      // 抖動頻率控制 (降低更新速度，不要太規律)
+      const updateFrequency = 0.15; // 每秒更新次數
+      const timeStep = Math.floor(time * updateFrequency);
 
-      // 隨機突波強度
-      const burstIntensity = 8; // 突然的大抖動
+      // 抖動幅度
+      const jitterAmplitude = 5;
 
-      // 突波機率 (每行出現突波的機率)
-      const burstProbability = 0.15;
+      // 強烈突波 (增加GLITCH效果)
+      const burstIntensity = 20; // 大幅提高突波強度
+      const burstProbability = 0.25; // 提高突波機率
 
-      // RGB色彩分離 (電視訊號干擾效果)
-      const rgbSeparation = 3;
+      // RGB色彩分離 (大幅增強顏色錯位)
+      const rgbSeparationBase = 15; // 基礎色彩分離
+      const rgbSeparationMax = 25; // 最大色彩分離 (突波時)
+
+      // 隨機種子 (降低規律性)
+      const randomSeed = Math.sin(timeStep * 12.9898) * 43758.5453;
+      const seededRandom = () => {
+        const x = Math.sin(randomSeed * frameCount) * 10000;
+        return x - Math.floor(x);
+      };
       // ========================================
 
       // Clear all to transparent first
@@ -182,22 +192,24 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
         data[i + 3] = 0;
       }
 
-      // Apply TV noise jitter - "push" pixels from mask outward
+      // Apply enhanced GLITCH effect - "push" pixels from mask outward
       for (let y = 0; y < height; y++) {
-        // 基礎隨機抖動 (每行不同)
-        const randomJitter = (Math.random() - 0.5) * 2 * jitterAmplitude;
+        // 基礎隨機抖動 (使用timeStep降低規律性)
+        const rowSeed = (y + timeStep * 100) * 0.01;
+        const randomJitter = (Math.sin(rowSeed * 12.9898 + Math.cos(rowSeed * 78.233)) - 0.5) * 2 * jitterAmplitude;
 
-        // 隨機突波 (模擬電視訊號突然干擾)
+        // 強烈突波 (大幅增加)
         const hasBurst = Math.random() < burstProbability;
         const burstOffset = hasBurst ? (Math.random() - 0.5) * 2 * burstIntensity : 0;
 
         // 組合抖動
         const displacement = Math.floor(randomJitter + burstOffset);
 
-        // RGB channel offsets (模擬色彩分離)
-        const redOffset = displacement + Math.floor((Math.random() - 0.5) * rgbSeparation);
-        const greenOffset = displacement;
-        const blueOffset = displacement - Math.floor((Math.random() - 0.5) * rgbSeparation);
+        // 大幅增強RGB色彩分離
+        const rgbSep = hasBurst ? rgbSeparationMax : rgbSeparationBase;
+        const redOffset = displacement + Math.floor((Math.random() - 0.5) * 2 * rgbSep);
+        const greenOffset = displacement + Math.floor((Math.random() - 0.5) * rgbSep * 0.5);
+        const blueOffset = displacement - Math.floor((Math.random() - 0.5) * 2 * rgbSep);
 
         for (let x = 0; x < width; x++) {
           const idx = y * width + x;
