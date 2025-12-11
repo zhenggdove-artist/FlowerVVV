@@ -114,6 +114,13 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
     canvas.width = width;
     canvas.height = height;
 
+    // Create offscreen canvas for processing (never visible to user)
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = width;
+    offscreenCanvas.height = height;
+    const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+    if (!offscreenCtx) return;
+
     let lastTime = Date.now();
 
     let frameCount = 0;
@@ -136,19 +143,17 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       lastTime = currentTime;
       timeRef.current += deltaTime;
 
-      // Clear canvas
-      ctx.clearRect(0, 0, width, height);
-
       // Calculate object-cover scaling for base image
       const scaleBase = Math.max(width / baseImg.width, height / baseImg.height);
       const offsetXBase = (width - baseImg.width * scaleBase) / 2;
       const offsetYBase = (height - baseImg.height * scaleBase) / 2;
 
-      // Draw base image
-      ctx.drawImage(baseImg, offsetXBase, offsetYBase, baseImg.width * scaleBase, baseImg.height * scaleBase);
+      // Draw base image to OFFSCREEN canvas (not visible)
+      offscreenCtx.clearRect(0, 0, width, height);
+      offscreenCtx.drawImage(baseImg, offsetXBase, offsetYBase, baseImg.width * scaleBase, baseImg.height * scaleBase);
 
-      // Get image data
-      const imageData = ctx.getImageData(0, 0, width, height);
+      // Get image data from offscreen canvas
+      const imageData = offscreenCtx.getImageData(0, 0, width, height);
       const data = imageData.data;
 
       // Create a copy for reading original values
@@ -247,7 +252,10 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
         }
       }
 
-      // Put modified image data back
+      // Clear the display canvas first (ensure no static image appears)
+      ctx.clearRect(0, 0, width, height);
+
+      // Put modified image data to display canvas
       ctx.putImageData(imageData, 0, 0);
 
       animationFrameRef.current = requestAnimationFrame(animate);
