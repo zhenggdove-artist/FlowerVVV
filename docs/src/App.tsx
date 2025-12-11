@@ -18,7 +18,9 @@ const App: React.FC = () => {
   const comparisonCanvasRef = useRef<HTMLCanvasElement>(null);
   const referenceImageRef = useRef<HTMLImageElement | null>(null);
   const referenceImageDataRef = useRef<ImageData | null>(null);
+  const similarityHistoryRef = useRef<number[]>([]);
   const [isReferenceReady, setIsReferenceReady] = useState<boolean>(false);
+  const [compareSize, setCompareSize] = useState<{ width: number; height: number }>({ width: 160, height: 120 });
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -49,12 +51,19 @@ const App: React.FC = () => {
 
       // Pre-process reference image data
       const canvas = document.createElement('canvas');
-      canvas.width = 160;  // Lower resolution for faster comparison
-      canvas.height = 120;
+      const targetWidth = 200; // Base width for comparison, height follows aspect ratio
+      const targetHeight = Math.round(targetWidth * (img.height / img.width));
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.drawImage(img, 0, 0, 160, 120);
-        referenceImageDataRef.current = ctx.getImageData(0, 0, 160, 120);
+        // Draw with object-cover style to avoid aspect distortion
+        const scale = Math.max(targetWidth / img.width, targetHeight / img.height);
+        const offsetX = (targetWidth - img.width * scale) / 2;
+        const offsetY = (targetHeight - img.height * scale) / 2;
+        ctx.drawImage(img, offsetX, offsetY, img.width * scale, img.height * scale);
+        referenceImageDataRef.current = ctx.getImageData(0, 0, targetWidth, targetHeight);
+        setCompareSize({ width: targetWidth, height: targetHeight });
         console.log("Reference image loaded and processed");
         setIsReferenceReady(true);
       }
@@ -113,17 +122,19 @@ const App: React.FC = () => {
 
       if (!video || !canvas || !refData || video.videoWidth === 0) return;
 
-      canvas.width = 160;
-      canvas.height = 120;
+      canvas.width = compareSize.width;
+      canvas.height = compareSize.height;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
       // Draw current video frame
-      ctx.drawImage(video, 0, 0, 160, 120);
-      const videoData = ctx.getImageData(0, 0, 160, 120);
+      const scale = Math.max(compareSize.width / video.videoWidth, compareSize.height / video.videoHeight);
+      const offsetX = (compareSize.width - video.videoWidth * scale) / 2;
+      const offsetY = (compareSize.height - video.videoHeight * scale) / 2;
+      ctx.drawImage(video, offsetX, offsetY, video.videoWidth * scale, video.videoHeight * scale);
+      const videoData = ctx.getImageData(0, 0, compareSize.width, compareSize.height);
 
-      // Calculate structural similarity using normalized cross-correlation
-      let totalDiff = 0;
+      // Calculate brightness-normalized difference to reduce lighting sensitivity
       let videoSum = 0;
       let refSum = 0;
       const pixelCount = videoData.data.length / 4;
@@ -132,12 +143,19 @@ const App: React.FC = () => {
         // Convert to grayscale for comparison
         const videoGray = (videoData.data[i] + videoData.data[i + 1] + videoData.data[i + 2]) / 3;
         const refGray = (refData.data[i] + refData.data[i + 1] + refData.data[i + 2]) / 3;
-
-        const diff = Math.abs(videoGray - refGray);
-        totalDiff += diff;
-
         videoSum += videoGray;
         refSum += refGray;
+      }
+
+      const videoMean = videoSum / pixelCount;
+      const refMean = refSum / pixelCount;
+
+      let totalDiff = 0;
+      for (let i = 0; i < videoData.data.length; i += 4) {
+        const videoGray = (videoData.data[i] + videoData.data[i + 1] + videoData.data[i + 2]) / 3 - videoMean;
+        const refGray = (refData.data[i] + refData.data[i + 1] + refData.data[i + 2]) / 3 - refMean;
+        const diff = Math.abs(videoGray - refGray);
+        totalDiff += diff;
       }
 
       // Average difference per pixel
@@ -145,19 +163,24 @@ const App: React.FC = () => {
 
       // Convert to similarity percentage (0-100)
       // Lower difference = higher similarity
-      // Typical range: avgDiff can be 0-255
+      // Typical range: avgDiff can be 0-255 (after normalization still within)
       const similarity = Math.max(0, 100 - (avgDiff / 255) * 100);
 
-      setSimilarityScore(similarity);
+      // Smooth similarity to avoid jitter
+      similarityHistoryRef.current.push(similarity);
+      if (similarityHistoryRef.current.length > 5) similarityHistoryRef.current.shift();
+      const smoothed = similarityHistoryRef.current.reduce((a, b) => a + b, 0) / similarityHistoryRef.current.length;
 
-      // More strict threshold: 85% similarity required
-      const threshold = 85;
-      setIsAligned(similarity >= threshold);
+      setSimilarityScore(smoothed);
 
-      if (similarity >= threshold) {
-        setStatusText(`ALIGNED ${similarity.toFixed(0)}% - TAP TO CAPTURE`);
+      // Slightly relaxed threshold to account for camera noise
+      const threshold = 75;
+      setIsAligned(smoothed >= threshold);
+
+      if (smoothed >= threshold) {
+        setStatusText(`ALIGNED ${smoothed.toFixed(0)}% - TAP TO CAPTURE`);
       } else {
-        setStatusText(`Align camera: ${similarity.toFixed(0)}%`);
+        setStatusText(`Align camera: ${smoothed.toFixed(0)}%`);
       }
     };
 
@@ -167,7 +190,7 @@ const App: React.FC = () => {
     // Then check every 500ms
     const intervalId = setInterval(checkAlignment, 500);
     return () => clearInterval(intervalId);
-  }, [gameState, isReferenceReady]);
+  }, [gameState, isReferenceReady, compareSize.width, compareSize.height]);
 
   const handleInteraction = useCallback(async () => {
     // IF IDLE: Capture and use mask
@@ -228,6 +251,9 @@ const App: React.FC = () => {
     setCapturedImage(null);
     setAnalysisResult(null);
     setGrowthTrigger(0);
+    setSimilarityScore(0);
+    setIsAligned(false);
+    similarityHistoryRef.current = [];
     setStatusText("");
   };
 
