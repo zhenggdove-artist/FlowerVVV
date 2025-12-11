@@ -353,7 +353,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     const ctx = hudCanvasRef.current?.getContext('2d');
     if (ctx) {
         ctx.clearRect(0, 0, width, height);
-        ctx.strokeStyle = 'rgba(24, 49, 235, 0.65)';
+        ctx.strokeStyle = 'rgba(250, 250, 250, 0.9)';
         ctx.fillStyle = '#00FF00';
         ctx.lineWidth = 1;
         ctx.font = '10px monospace';
