@@ -214,14 +214,30 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
         // - 突波時使用 rgbSeparationMax (25px) 讓顏色錯位更誇張
         const rgbSep = hasBurst ? rgbSeparationMax : rgbSeparationBase;
 
+        // 🎛️ RGB錯位機率 - 調整此數值控制多少比例的行會有RGB錯位
+        // - 0.1 = 10%的行會錯位（稀疏）
+        // - 0.2 = 20%的行會錯位（中等）
+        // - 0.4 = 40%的行會錯位（頻繁）
+        const rgbGlitchProbability = 0.15; // 15%的行會有RGB錯位
+
+        // 隨機決定這一行是否要應用RGB色彩分離
+        const shouldApplyRGBSeparation = Math.random() < rgbGlitchProbability;
+
         // 三個顏色通道的位移量（創造顏色錯位效果）
         // redOffset:   紅色往右偏移最多（±2倍rgbSep）-> 右側紅邊
         // greenOffset: 綠色偏移較少（±0.5倍rgbSep）-> 中間綠色
         // blueOffset:  藍色往左偏移最多（±2倍rgbSep）-> 左側藍邊
         // 結果：物體邊緣會出現 藍-綠-物體-綠-紅 的彩虹光暈
-        const redOffset = displacement + Math.floor((Math.random() - 0.5) * 2 * rgbSep);
-        const greenOffset = displacement + Math.floor((Math.random() - 0.5) * rgbSep * 0.5);
-        const blueOffset = displacement - Math.floor((Math.random() - 0.5) * 2 * rgbSep);
+        // 只有被選中的行才會應用RGB錯位，其他行保持正常
+        const redOffset = shouldApplyRGBSeparation
+          ? displacement + Math.floor((Math.random() - 0.5) * 2 * rgbSep)
+          : displacement;
+        const greenOffset = shouldApplyRGBSeparation
+          ? displacement + Math.floor((Math.random() - 0.5) * rgbSep * 0.5)
+          : displacement;
+        const blueOffset = shouldApplyRGBSeparation
+          ? displacement - Math.floor((Math.random() - 0.5) * 2 * rgbSep)
+          : displacement;
 
         for (let x = 0; x < width; x++) {
           const idx = y * width + x;
