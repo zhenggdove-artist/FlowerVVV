@@ -199,16 +199,10 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
             const idxGreen = (y * width + sourceXGreen) * 4;
             const idxBlue = (y * width + sourceXBlue) * 4;
 
-            // Only apply if source pixels are also in mask (to prevent bleeding)
-            if (maskBuffer[y * width + sourceXRed] === 1) {
-              data[i] = originalData[idxRed];
-            }
-            if (maskBuffer[y * width + sourceXGreen] === 1) {
-              data[i + 1] = originalData[idxGreen + 1];
-            }
-            if (maskBuffer[y * width + sourceXBlue] === 1) {
-              data[i + 2] = originalData[idxBlue + 2];
-            }
+            // Apply glitch effect regardless of source position
+            data[i] = originalData[idxRed];
+            data[i + 1] = originalData[idxGreen + 1];
+            data[i + 2] = originalData[idxBlue + 2];
           } else {
             // Outside mask: make transparent
             data[idx * 4 + 3] = 0;
@@ -243,13 +237,11 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
               const sourceX = Math.max(0, Math.min(width - 1, x + glitchDisplacement));
               const sourceIdx = y * width + sourceX;
 
-              if (maskBuffer[sourceIdx] === 1) {
-                const i = idx * 4;
-                const si = sourceIdx * 4;
-                data[i] = originalData[si];
-                data[i + 1] = originalData[si + 1];
-                data[i + 2] = originalData[si + 2];
-              }
+              const i = idx * 4;
+              const si = sourceIdx * 4;
+              data[i] = originalData[si];
+              data[i + 1] = originalData[si + 1];
+              data[i + 2] = originalData[si + 2];
             }
           }
         }
