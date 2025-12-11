@@ -244,7 +244,9 @@ const App: React.FC = () => {
         muted
         className={`absolute top-0 left-0 w-full h-full object-cover transition-opacity duration-700 ${capturedImage ? 'opacity-0' : 'opacity-100'}`}
         style={{
-             filter: 'contrast(1.1) brightness(1.1) saturate(0.8) sepia(0.2)'
+             filter: 'contrast(1.1) brightness(1.1) saturate(0.8) sepia(0.2)',
+             // Hide the underlying live feed so only the glitch layer is visible
+             opacity: gameState === GameState.IDLE && !capturedImage ? 0 : 1
         }}
       />
 

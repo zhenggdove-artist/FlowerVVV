@@ -20,6 +20,19 @@ const run = async () => {
   const targetAssets = path.join(rootDir, 'assets');
   await fs.promises.rm(targetAssets, { recursive: true, force: true });
 
+  // Remove unused frame dump to avoid re-publishing huge png sequences
+  const distFiles = await fs.promises.readdir(distDir);
+  let removedFrames = 0;
+  for (const file of distFiles) {
+    if (/^frame_\d+\.png$/i.test(file)) {
+      await fs.promises.rm(path.join(distDir, file), { force: true });
+      removedFrames++;
+    }
+  }
+  if (removedFrames > 0) {
+    console.log(`sync-dist: cleaned ${removedFrames} frame_*.png files from dist.`);
+  }
+
   const distEntries = await fs.promises.readdir(distDir);
   console.log(`sync-dist: copying ${distEntries.length} items...`);
 
