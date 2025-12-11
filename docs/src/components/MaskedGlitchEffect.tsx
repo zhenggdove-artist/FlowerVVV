@@ -165,9 +165,9 @@ const MaskedGlitchEffect: React.FC<MaskedGlitchEffectProps> = ({
       const time = timeRef.current;
 
       // 波浪晃動參數
-      const waveSpeed = 0.9;        // 波浪速度 (數值越小越慢)
+      const waveSpeed = 4;        // 波浪速度 (數值越小越慢)
       const waveAmplitude = 3;      // 波浪幅度 (晃動範圍，像素)
-      const waveFrequency = 0.6;   // 波浪頻率 (數值越小波浪越平緩)
+      const waveFrequency = 0.01;   // 波浪頻率 (數值越小波浪越平緩)
 
       // ========== RGB色彩分離（顏色錯位效果）==========
       // 說明：模擬類比訊號干擾，讓紅綠藍三色在不同位置顯示
