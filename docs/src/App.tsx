@@ -18,6 +18,7 @@ const App: React.FC = () => {
   const comparisonCanvasRef = useRef<HTMLCanvasElement>(null);
   const referenceImageRef = useRef<HTMLImageElement | null>(null);
   const referenceImageDataRef = useRef<ImageData | null>(null);
+  const [isReferenceReady, setIsReferenceReady] = useState<boolean>(false);
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -55,6 +56,7 @@ const App: React.FC = () => {
         ctx.drawImage(img, 0, 0, 160, 120);
         referenceImageDataRef.current = ctx.getImageData(0, 0, 160, 120);
         console.log("Reference image loaded and processed");
+        setIsReferenceReady(true);
       }
     };
     img.src = referenceImage;
@@ -98,6 +100,7 @@ const App: React.FC = () => {
   useEffect(() => {
     // Only run alignment check when in IDLE state (before capture)
     if (gameState !== GameState.IDLE) return;
+    if (!isReferenceReady) return;
     if (!videoRef.current || !comparisonCanvasRef.current) return;
     if (!referenceImageDataRef.current) return; // Wait for reference image to load
 
@@ -164,7 +167,7 @@ const App: React.FC = () => {
     // Then check every 500ms
     const intervalId = setInterval(checkAlignment, 500);
     return () => clearInterval(intervalId);
-  }, [gameState, referenceImageDataRef.current]);
+  }, [gameState, isReferenceReady]);
 
   const handleInteraction = useCallback(async () => {
     // IF IDLE: Capture and use mask
