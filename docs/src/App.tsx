@@ -2,31 +2,31 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import DreamOverlay from './components/DreamOverlay.tsx';
 import PlantGrowth from './components/PlantGrowth.tsx';
 import { GameState, AnalysisResult, FaceRegion } from './types.ts';
-import { FaceDetector, FilesetResolver, Detection } from '@mediapipe/tasks-vision';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
+import '@tensorflow/tfjs';
 
 const App: React.FC = () => {
   console.log("###################################################");
-  console.log("APP.TSX: FACE DETECTION MODE!");
+  console.log("APP.TSX: STATUE/PERSON DETECTION MODE!");
   console.log("###################################################");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const overlayCanvasRef = useRef<HTMLCanvasElement>(null); // Canvas for drawing face circles
-  const faceDetectorRef = useRef<FaceDetector | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  const objectDetectorRef = useRef<cocoSsd.ObjectDetection | null>(null);
   const detectionIntervalRef = useRef<number | null>(null);
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [statusText, setStatusText] = useState<string>("Point camera at faces");
+  const [statusText, setStatusText] = useState<string>("Point camera at statues/people");
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
-  const [detectedFaces, setDetectedFaces] = useState<FaceRegion[]>([]);
-  const [isFaceDetectorReady, setIsFaceDetectorReady] = useState<boolean>(false);
+  const [detectedHeads, setDetectedHeads] = useState<FaceRegion[]>([]);
+  const [isDetectorReady, setIsDetectorReady] = useState<boolean>(false);
 
-  // A counter that increments to trigger new growth bursts
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
 
-  console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "faces:", detectedFaces.length);
+  console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "heads:", detectedHeads.length);
 
   // Handle Resize
   useEffect(() => {
@@ -35,46 +35,34 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Initialize MediaPipe Face Detector
+  // Initialize COCO-SSD Object Detector
   useEffect(() => {
     let cancelled = false;
 
-    const initFaceDetector = async () => {
+    const initDetector = async () => {
       try {
-        console.log("Initializing MediaPipe Face Detector...");
+        console.log("Initializing COCO-SSD Object Detector...");
 
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-        );
-
-        const detector = await FaceDetector.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-            delegate: "GPU"
-          },
-          runningMode: "VIDEO",
-          minDetectionConfidence: 0.5
+        const model = await cocoSsd.load({
+          base: 'lite_mobilenet_v2' // Faster, better for mobile
         });
 
         if (cancelled) return;
 
-        faceDetectorRef.current = detector;
-        setIsFaceDetectorReady(true);
-        console.log("Face Detector initialized successfully");
+        objectDetectorRef.current = model;
+        setIsDetectorReady(true);
+        console.log("Object Detector initialized successfully");
       } catch (err) {
-        console.error("Failed to initialize face detector:", err);
-        setStatusText("FACE DETECTOR ERROR");
+        console.error("Failed to initialize object detector:", err);
+        setStatusText("DETECTOR ERROR");
         setGameState(GameState.ERROR);
       }
     };
 
-    initFaceDetector();
+    initDetector();
 
     return () => {
       cancelled = true;
-      if (faceDetectorRef.current) {
-        faceDetectorRef.current.close();
-      }
     };
   }, []);
 
@@ -85,7 +73,7 @@ const App: React.FC = () => {
         console.log("Starting camera...");
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: 'environment', // Use back camera
+            facingMode: 'environment',
             width: { ideal: 1920 },
             height: { ideal: 1080 }
           },
@@ -104,9 +92,8 @@ const App: React.FC = () => {
     startCamera();
   }, []);
 
-  // Face Detection Loop - RUNS CONTINUOUSLY FROM START
+  // Object Detection Loop - Detect People/Statues
   useEffect(() => {
-    // Only run face detection when in IDLE state (before capture)
     if (gameState !== GameState.IDLE) {
       if (detectionIntervalRef.current) {
         cancelAnimationFrame(detectionIntervalRef.current);
@@ -115,20 +102,20 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!isFaceDetectorReady || !faceDetectorRef.current) return;
+    if (!isDetectorReady || !objectDetectorRef.current) return;
     if (!videoRef.current || !overlayCanvasRef.current) return;
 
-    console.log("Starting continuous face detection...");
+    console.log("Starting continuous person/statue detection...");
 
     let lastVideoTime = -1;
 
-    const detectFaces = () => {
+    const detectObjects = async () => {
       const video = videoRef.current;
       const canvas = overlayCanvasRef.current;
-      const detector = faceDetectorRef.current;
+      const detector = objectDetectorRef.current;
 
       if (!video || !canvas || !detector || video.videoWidth === 0) {
-        detectionIntervalRef.current = requestAnimationFrame(detectFaces);
+        detectionIntervalRef.current = requestAnimationFrame(detectObjects);
         return;
       }
 
@@ -140,7 +127,7 @@ const App: React.FC = () => {
 
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        detectionIntervalRef.current = requestAnimationFrame(detectFaces);
+        detectionIntervalRef.current = requestAnimationFrame(detectObjects);
         return;
       }
 
@@ -149,8 +136,13 @@ const App: React.FC = () => {
         lastVideoTime = video.currentTime;
 
         try {
-          // Detect faces in the video frame
-          const detections: Detection[] = detector.detectForVideo(video, performance.now()).detections;
+          // Detect objects (looking for "person" class)
+          const predictions = await detector.detect(video);
+
+          // Filter for person detections with lower threshold for distant statues
+          const personDetections = predictions.filter(
+            pred => pred.class === 'person' && pred.score > 0.3 // Lower threshold for statues
+          );
 
           // Clear previous drawings
           ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -172,85 +164,91 @@ const App: React.FC = () => {
             offsetY = 0;
           }
 
-          const faceRegions: FaceRegion[] = [];
+          const headRegions: FaceRegion[] = [];
 
-          // Draw circles around detected faces
-          detections.forEach((detection) => {
-            const bbox = detection.boundingBox;
-            if (!bbox) return;
+          // Draw circles around detected person heads
+          personDetections.forEach((detection, idx) => {
+            const [x, y, width, height] = detection.bbox;
 
             // Convert bbox coordinates to canvas coordinates
-            const x = offsetX + (bbox.originX / video.videoWidth) * drawWidth;
-            const y = offsetY + (bbox.originY / video.videoHeight) * drawHeight;
-            const width = (bbox.width / video.videoWidth) * drawWidth;
-            const height = (bbox.height / video.videoHeight) * drawHeight;
+            const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
+            const canvasY = offsetY + (y / video.videoHeight) * drawHeight;
+            const canvasWidth = (width / video.videoWidth) * drawWidth;
+            const canvasHeight = (height / video.videoHeight) * drawHeight;
 
-            // Calculate center and radius for circle
-            const centerX = x + width / 2;
-            const centerY = y + height / 2;
-            // Use the larger dimension and multiply by 0.7 to fit head better
-            const radius = Math.max(width, height) * 0.7;
+            // Estimate head position: top 25% of the person bbox
+            const headHeight = canvasHeight * 0.25;
+            const headCenterX = canvasX + canvasWidth / 2;
+            const headCenterY = canvasY + headHeight / 2;
 
-            // Draw circle
+            // Head radius: use the width of the person bbox
+            const headRadius = Math.max(canvasWidth * 0.4, canvasHeight * 0.15);
+
+            // Draw circle around head
             ctx.beginPath();
-            ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+            ctx.arc(headCenterX, headCenterY, headRadius, 0, 2 * Math.PI);
             ctx.strokeStyle = '#00FF00';
             ctx.lineWidth = 4;
             ctx.stroke();
 
+            // Draw detection box for debugging (optional)
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.3)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
+
             // Draw confidence text
             ctx.fillStyle = '#00FF00';
-            ctx.font = '16px monospace';
+            ctx.font = '14px monospace';
             ctx.fillText(
-              `Face ${(detection.categories[0]?.score || 0).toFixed(2)}`,
-              centerX - radius,
-              centerY - radius - 10
+              `Person ${detection.score.toFixed(2)}`,
+              headCenterX - headRadius,
+              headCenterY - headRadius - 10
             );
 
-            // Store face region (normalized coordinates 0-1)
-            faceRegions.push({
-              centerX: centerX / canvas.width,
-              centerY: centerY / canvas.height,
-              radius: radius / Math.max(canvas.width, canvas.height),
-              confidence: detection.categories[0]?.score || 0
+            // Store head region (normalized coordinates 0-1)
+            headRegions.push({
+              centerX: headCenterX / canvas.width,
+              centerY: headCenterY / canvas.height,
+              radius: headRadius / Math.max(canvas.width, canvas.height),
+              confidence: detection.score
             });
           });
 
-          setDetectedFaces(faceRegions);
+          setDetectedHeads(headRegions);
 
           // Update status text
-          if (faceRegions.length > 0) {
-            setStatusText(`${faceRegions.length} FACE(S) DETECTED - TAP TO CAPTURE`);
+          if (headRegions.length > 0) {
+            setStatusText(`${headRegions.length} PERSON(S) DETECTED - TAP TO CAPTURE`);
           } else {
-            setStatusText("Point camera at faces");
+            setStatusText("Point camera at statues/people");
           }
 
         } catch (err) {
-          console.error("Face detection error:", err);
+          console.error("Object detection error:", err);
         }
       }
 
-      detectionIntervalRef.current = requestAnimationFrame(detectFaces);
+      detectionIntervalRef.current = requestAnimationFrame(detectObjects);
     };
 
-    detectFaces();
+    detectObjects();
 
     return () => {
       if (detectionIntervalRef.current) {
         cancelAnimationFrame(detectionIntervalRef.current);
       }
     };
-  }, [gameState, isFaceDetectorReady, viewport.width, viewport.height]);
+  }, [gameState, isDetectorReady, viewport.width, viewport.height]);
 
   const handleInteraction = useCallback(async () => {
-    // IF IDLE: Capture and detect faces
+    // IF IDLE: Capture and detect heads
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
 
-        // Check if at least one face is detected
-        if (detectedFaces.length === 0) {
-          setStatusText("NO FACES DETECTED - POINT AT FACE(S)");
-          setTimeout(() => setStatusText("Point camera at faces"), 2000);
+        // Check if at least one person/statue is detected
+        if (detectedHeads.length === 0) {
+          setStatusText("NO STATUES/PEOPLE DETECTED");
+          setTimeout(() => setStatusText("Point camera at statues/people"), 2000);
           return;
         }
 
@@ -272,37 +270,37 @@ const App: React.FC = () => {
         const base64 = canvas.toDataURL('image/jpeg', 0.8);
         setCapturedImage(base64);
 
-        // 2. Use detected face regions
+        // 2. Use detected head regions
         setGameState(GameState.ANALYZING);
         setStatusText("VENI VIDI VICI");
 
-        // Create result with all detected face regions
+        // Create result with all detected head regions
         const result: AnalysisResult = {
           detected: true,
-          faceRegions: detectedFaces,
-          confidence: detectedFaces.reduce((sum, face) => sum + face.confidence, 0) / detectedFaces.length,
-          label: `${detectedFaces.length} face(s)`
+          faceRegions: detectedHeads,
+          confidence: detectedHeads.reduce((sum, head) => sum + head.confidence, 0) / detectedHeads.length,
+          label: `${detectedHeads.length} statue(s)`
         };
 
         setAnalysisResult(result);
         setStatusText("");
         setGameState(GameState.GROWING);
-        setGrowthTrigger(prev => prev + 1); // Trigger initial growth
+        setGrowthTrigger(prev => prev + 1);
     }
     // IF ALREADY GROWING: Add more plants
     else if (gameState === GameState.GROWING) {
         setGrowthTrigger(prev => prev + 1);
     }
 
-  }, [gameState, detectedFaces]);
+  }, [gameState, detectedHeads]);
 
   const handleReset = () => {
     setGameState(GameState.IDLE);
     setCapturedImage(null);
     setAnalysisResult(null);
     setGrowthTrigger(0);
-    setDetectedFaces([]);
-    setStatusText("Point camera at faces");
+    setDetectedHeads([]);
+    setStatusText("Point camera at statues/people");
   };
 
   return (
@@ -323,7 +321,7 @@ const App: React.FC = () => {
         }}
       />
 
-      {/* --- LAYER 1.5: FACE DETECTION OVERLAY --- */}
+      {/* --- LAYER 1.5: DETECTION OVERLAY --- */}
       {!capturedImage && gameState === GameState.IDLE && (
         <canvas
           ref={overlayCanvasRef}
