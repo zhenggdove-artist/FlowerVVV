@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { AnalysisResult } from '../types.ts';
+import { AnalysisResult, ColorScheme } from '../types.ts';
 
 interface PlantGrowthProps {
   analysis: AnalysisResult | null;
@@ -9,6 +9,7 @@ interface PlantGrowthProps {
   growthTrigger: number;
   width: number;
   height: number;
+  colorScheme: ColorScheme;
 }
 
 // Custom Shader for swaying plants
@@ -64,7 +65,7 @@ const fragmentShader = `
   }
 `;
 
-const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, active, growthTrigger, width, height }) => {
+const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, active, growthTrigger, width, height, colorScheme }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const hudCanvasRef = useRef<HTMLCanvasElement>(null);
   
@@ -292,10 +293,11 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
             velocities[i * 3] = (Math.random() - 0.5) * 2;
             velocities[i * 3 + 1] = (Math.random() - 0.5) * 2;
 
-            colors[i * 3] = 0.0;
-            colors[i * 3 + 1] = 1.0;
-            colors[i * 3 + 2] = 0.5;
-            
+            // Use colorScheme for head color (keep it greenish for visibility)
+            colors[i * 3] = colorScheme.head.r;
+            colors[i * 3 + 1] = colorScheme.head.g;
+            colors[i * 3 + 2] = colorScheme.head.b;
+
             activeHeads.push(i); // Track this head
             spawned++;
         }
@@ -317,19 +319,23 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
              positions[idx * 3 + 2] = 0;
              life[idx] = -1;
 
-             if (type === 2) { // VINE BODY - Dark green (墨綠色)
-                colors[idx * 3] = 0.0 + Math.random() * 0.1;     // R: 0-0.1
-                colors[idx * 3 + 1] = 0.2 + Math.random() * 0.15; // G: 0.2-0.35 (darker green)
-                colors[idx * 3 + 2] = 0.1 + Math.random() * 0.1;  // B: 0.1-0.2
-             } else if (type === 3) { // FLOWER
-                // Neon Pink/Purple
-                colors[idx * 3] = 1.0;
-                colors[idx * 3 + 1] = 0.0 + Math.random() * 0.2;
-                colors[idx * 3 + 2] = 0.8 + Math.random() * 0.2;
-             } else if (type === 4) { // BUG - Blue
-                colors[idx * 3] = 0.0 + Math.random() * 0.2;     // R: 0-0.2
-                colors[idx * 3 + 1] = 0.3 + Math.random() * 0.3; // G: 0.3-0.6
-                colors[idx * 3 + 2] = 0.8 + Math.random() * 0.2; // B: 0.8-1.0 (bright blue)
+             // Add slight random variation to colors (±15%)
+             const variation = 0.15;
+             const randomize = (value: number) =>
+               Math.max(0, Math.min(1, value + (Math.random() - 0.5) * variation));
+
+             if (type === 2) { // VINE BODY - Use colorScheme
+                colors[idx * 3] = randomize(colorScheme.vine.r);
+                colors[idx * 3 + 1] = randomize(colorScheme.vine.g);
+                colors[idx * 3 + 2] = randomize(colorScheme.vine.b);
+             } else if (type === 3) { // FLOWER - Use colorScheme
+                colors[idx * 3] = randomize(colorScheme.flower.r);
+                colors[idx * 3 + 1] = randomize(colorScheme.flower.g);
+                colors[idx * 3 + 2] = randomize(colorScheme.flower.b);
+             } else if (type === 4) { // BUG - Use colorScheme
+                colors[idx * 3] = randomize(colorScheme.bug.r);
+                colors[idx * 3 + 1] = randomize(colorScheme.bug.g);
+                colors[idx * 3 + 2] = randomize(colorScheme.bug.b);
              }
              return;
          }

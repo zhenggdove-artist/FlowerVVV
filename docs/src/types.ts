@@ -47,3 +47,11 @@ export interface Particle {
   color: [number, number, number];
   type: number; // 0: Dead, 1: RootHead, 2: Stem, 3: Flower
 }
+
+// Color scheme for plant growth
+export interface ColorScheme {
+  head: { r: number; g: number; b: number };      // Type 1: Growing head
+  vine: { r: number; g: number; b: number };      // Type 2: Vine body
+  flower: { r: number; g: number; b: number };    // Type 3: Flower
+  bug: { r: number; g: number; b: number };       // Type 4: Bug
+}

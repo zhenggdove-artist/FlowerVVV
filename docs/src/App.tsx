@@ -1,9 +1,25 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import DreamOverlay from './components/DreamOverlay.tsx';
 import PlantGrowth from './components/PlantGrowth.tsx';
-import { GameState, AnalysisResult, FaceRegion } from './types.ts';
+import { GameState, AnalysisResult, FaceRegion, ColorScheme } from './types.ts';
 import * as blazeface from '@tensorflow-models/blazeface';
 import '@tensorflow/tfjs';
+
+// Generate random color scheme for plants
+const generateRandomColorScheme = (): ColorScheme => {
+  const randomColor = () => ({
+    r: Math.random() * 0.3 + 0.1,  // Prevent too dark colors
+    g: Math.random() * 0.8 + 0.2,
+    b: Math.random() * 0.8 + 0.2
+  });
+
+  return {
+    head: { r: 0.0, g: 1.0, b: 0.5 },  // Always keep head greenish for visibility
+    vine: randomColor(),
+    flower: randomColor(),
+    bug: randomColor()
+  };
+};
 
 const App: React.FC = () => {
   console.log("###################################################");
@@ -29,7 +45,11 @@ const App: React.FC = () => {
   const detectionStableCountRef = useRef<number>(0);
   const autoCaptureFiredRef = useRef<boolean>(false);
 
-  console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "heads:", detectedHeads.length);
+  // Color scheme management
+  const [viciClickCount, setViciClickCount] = useState<number>(0);
+  const [currentColorScheme, setCurrentColorScheme] = useState<ColorScheme>(() => generateRandomColorScheme());
+
+  console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "heads:", detectedHeads.length, "clicks:", viciClickCount);
 
   // Handle Resize
   useEffect(() => {
@@ -256,6 +276,17 @@ const App: React.FC = () => {
   }, [gameState, isDetectorReady, viewport.width, viewport.height, isInitialized]);
 
   const handleInteraction = useCallback(async () => {
+    // Increment VICI click counter
+    const newClickCount = viciClickCount + 1;
+    setViciClickCount(newClickCount);
+
+    // Every 10 clicks, generate new random color scheme
+    if (newClickCount % 10 === 0) {
+      const newColorScheme = generateRandomColorScheme();
+      setCurrentColorScheme(newColorScheme);
+      console.log(`Color scheme changed at click ${newClickCount}:`, newColorScheme);
+    }
+
     // IF IDLE: Capture and detect heads
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
@@ -307,7 +338,7 @@ const App: React.FC = () => {
         setGrowthTrigger(prev => prev + 1);
     }
 
-  }, [gameState, detectedHeads]);
+  }, [gameState, detectedHeads, viciClickCount]);
 
   const handleReset = () => {
     setGameState(GameState.IDLE);
@@ -389,6 +420,7 @@ const App: React.FC = () => {
         growthTrigger={growthTrigger}
         width={viewport.width}
         height={viewport.height}
+        colorScheme={currentColorScheme}
       />
 
       {/* --- LAYER 4: UI OVERLAY --- */}
