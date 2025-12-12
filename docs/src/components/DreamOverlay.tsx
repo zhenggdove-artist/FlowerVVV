@@ -39,10 +39,11 @@ const DreamOverlay: React.FC<DreamOverlayProps> = ({ gameState, onInteraction, o
       
       {/* --- HEADER --- */}
       <div className="flex flex-col items-center justify-center w-full mt-4">
-        <h1 className="text-4xl md:text-7xl font-future text-transparent bg-clip-text bg-gradient-to-b from-white to-gray-400 tracking-widest animate-pulse"
-            style={{ 
-              textShadow: '0 0 10px #FF10F0, 0 0 20px #FF10F0, 0 0 30px #FF10F0',
-              WebkitTextStroke: '1px #FF10F0'
+        <h1 className="text-4xl md:text-7xl font-future text-white tracking-widest"
+            style={{
+              textShadow: '0 0 15px #FF10F0, 0 0 25px #FF10F0',
+              WebkitTextStroke: '0.5px #FF10F0',
+              animation: 'gentlePulse 3s ease-in-out infinite'
             }}>
           VENI VIDI VICI
         </h1>
@@ -50,6 +51,14 @@ const DreamOverlay: React.FC<DreamOverlayProps> = ({ gameState, onInteraction, o
           SYSTEM_ID // {randomCode}
         </div>
       </div>
+
+      {/* Custom gentle pulse animation */}
+      <style>{`
+        @keyframes gentlePulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.85; }
+        }
+      `}</style>
 
       {/* --- CENTRAL RETICLE (Only in IDLE) --- */}
       {gameState === GameState.IDLE && (
@@ -68,20 +77,17 @@ const DreamOverlay: React.FC<DreamOverlayProps> = ({ gameState, onInteraction, o
       {(gameState === GameState.GROWING && analysisResult) && (
         <div className="absolute inset-0 w-full h-full">
             <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon 
-                    points={getPolygonPath()} 
-                    fill="none" 
-                    stroke="#FF10F0" 
-                    strokeWidth="0.2" 
+                <polygon
+                    points={getPolygonPath()}
+                    fill="none"
+                    stroke="#FF10F0"
+                    strokeWidth="0.2"
                     vectorEffect="non-scaling-stroke"
                     className="opacity-50 drop-shadow-[0_0_8px_#FF10F0]"
                 >
                   <animate attributeName="opacity" values="0.3;0.7;0.3" dur="3s" repeatCount="indefinite" />
                 </polygon>
             </svg>
-            <div className="absolute top-4 left-4 text-[10px] font-code text-neon-pink bg-black/50 px-2 py-1 border border-neon-pink/50">
-                CONTOUR_LOCKED
-            </div>
         </div>
       )}
 
