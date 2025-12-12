@@ -18,7 +18,7 @@ const App: React.FC = () => {
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [statusText, setStatusText] = useState<string>("Point camera at statues/people");
+  const [statusText, setStatusText] = useState<string>("Point camera at statues");
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [detectedHeads, setDetectedHeads] = useState<FaceRegion[]>([]);
@@ -139,9 +139,9 @@ const App: React.FC = () => {
           // Detect objects (looking for "person" class)
           const predictions = await detector.detect(video);
 
-          // Filter for person detections with very low threshold for distant statues
+          // Filter for person detections with extremely low threshold for distant statues
           const personDetections = predictions.filter(
-            pred => pred.class === 'person' && pred.score > 0.15 // Very low threshold for distant statues
+            pred => pred.class === 'person' && pred.score > 0.05 // Extremely low threshold for distant statues
           );
 
           // Clear previous drawings
@@ -184,12 +184,17 @@ const App: React.FC = () => {
             // Head radius: smaller, tighter fit to avoid background (30% of width or 12% of height)
             const headRadius = Math.min(canvasWidth * 0.35, canvasHeight * 0.12);
 
-            // Draw circle around head (no text labels)
+            // Draw circle around head with thinner line
             ctx.beginPath();
             ctx.arc(headCenterX, headCenterY, headRadius, 0, 2 * Math.PI);
             ctx.strokeStyle = '#00FF00';
-            ctx.lineWidth = 4;
+            ctx.lineWidth = 2; // Thinner line
             ctx.stroke();
+
+            // Draw detection box with thinner line
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.5)';
+            ctx.lineWidth = 1; // Thinner line
+            ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
 
             // Store head region (normalized coordinates 0-1)
             headRegions.push({
@@ -204,9 +209,9 @@ const App: React.FC = () => {
 
           // Update status text
           if (headRegions.length > 0) {
-            setStatusText(`${headRegions.length} PERSON(S) DETECTED - TAP TO CAPTURE`);
+            setStatusText(`${headRegions.length} DETECTED - TAP TO CAPTURE`);
           } else {
-            setStatusText("Point camera at statues/people");
+            setStatusText("Point camera at statues");
           }
 
         } catch (err) {
@@ -231,10 +236,10 @@ const App: React.FC = () => {
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
 
-        // Check if at least one person/statue is detected
+        // Check if at least one statue is detected
         if (detectedHeads.length === 0) {
-          setStatusText("NO STATUES/PEOPLE DETECTED");
-          setTimeout(() => setStatusText("Point camera at statues/people"), 2000);
+          setStatusText("NO STATUES DETECTED");
+          setTimeout(() => setStatusText("Point camera at statues"), 2000);
           return;
         }
 
@@ -286,7 +291,7 @@ const App: React.FC = () => {
     setAnalysisResult(null);
     setGrowthTrigger(0);
     setDetectedHeads([]);
-    setStatusText("Point camera at statues/people");
+    setStatusText("Point camera at statues");
   };
 
   return (
@@ -301,6 +306,7 @@ const App: React.FC = () => {
         autoPlay
         playsInline
         muted
+        controls={false}
         className={`absolute top-0 left-0 w-full h-full object-cover transition-opacity duration-700 ${capturedImage ? 'opacity-0' : 'opacity-100'}`}
         style={{
              filter: 'contrast(1.1) brightness(1.1) saturate(0.8)'
