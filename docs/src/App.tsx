@@ -2,25 +2,23 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import DreamOverlay from './components/DreamOverlay.tsx';
 import PlantGrowth from './components/PlantGrowth.tsx';
 import { GameState, AnalysisResult, FaceRegion } from './types.ts';
-import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import * as blazeface from '@tensorflow-models/blazeface';
 import '@tensorflow/tfjs';
 
 const App: React.FC = () => {
   console.log("###################################################");
-  console.log("APP.TSX: DUAL DETECTION MODE (COCO-SSD + BLAZEFACE)!");
+  console.log("APP.TSX: OPTIMIZED - BLAZEFACE ONLY (FAST MODE)!");
   console.log("###################################################");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-  const objectDetectorRef = useRef<cocoSsd.ObjectDetection | null>(null);
   const faceDetectorRef = useRef<blazeface.BlazeFaceModel | null>(null);
   const detectionIntervalRef = useRef<number | null>(null);
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [statusText, setStatusText] = useState<string>("Point camera at statues");
+  const [statusText, setStatusText] = useState<string>("LOADING...");
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [detectedHeads, setDetectedHeads] = useState<FaceRegion[]>([]);
@@ -40,34 +38,32 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Initialize COCO-SSD + BlazeFace
+  // Initialize BlazeFace (Fast & Lightweight)
   useEffect(() => {
     let cancelled = false;
 
-    const initDetectors = async () => {
+    const initDetector = async () => {
       try {
-        console.log("Initializing detectors...");
+        console.log("Loading BlazeFace (fast mode)...");
+        setStatusText("LOADING DETECTOR...");
 
-        // Load both models in parallel
-        const [cocoModel, blazeModel] = await Promise.all([
-          cocoSsd.load({ base: 'lite_mobilenet_v2' }),
-          blazeface.load()
-        ]);
+        // Load only BlazeFace - much faster than COCO-SSD
+        const blazeModel = await blazeface.load();
 
         if (cancelled) return;
 
-        objectDetectorRef.current = cocoModel;
         faceDetectorRef.current = blazeModel;
         setIsDetectorReady(true);
-        console.log("Both detectors initialized successfully");
+        setStatusText("READY - Point camera at faces");
+        console.log("BlazeFace loaded successfully - READY!");
       } catch (err) {
-        console.error("Failed to initialize detectors:", err);
+        console.error("Failed to initialize detector:", err);
         setStatusText("DETECTOR ERROR");
         setGameState(GameState.ERROR);
       }
     };
 
-    initDetectors();
+    initDetector();
 
     return () => {
       cancelled = true;
@@ -108,7 +104,7 @@ const App: React.FC = () => {
     startCamera();
   }, []);
 
-  // Dual Detection Loop - BlazeFace + COCO-SSD (OPTIMIZED - Lower frequency)
+  // Fast Detection Loop - BlazeFace Only (OPTIMIZED)
   useEffect(() => {
     // Don't start detection until initialization is complete
     if (!isInitialized) return;
@@ -121,18 +117,17 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!isDetectorReady || !objectDetectorRef.current || !faceDetectorRef.current) return;
+    if (!isDetectorReady || !faceDetectorRef.current) return;
     if (!videoRef.current || !overlayCanvasRef.current) return;
 
-    console.log("Starting optimized dual detection (300ms interval)...");
+    console.log("Starting FAST face detection (200ms interval)...");
 
-    const detectObjects = async () => {
+    const detectFaces = async () => {
       const video = videoRef.current;
       const canvas = overlayCanvasRef.current;
-      const cocoDetector = objectDetectorRef.current;
       const faceDetector = faceDetectorRef.current;
 
-      if (!video || !canvas || !cocoDetector || !faceDetector || video.videoWidth === 0) {
+      if (!video || !canvas || !faceDetector || video.videoWidth === 0) {
         return;
       }
 
@@ -149,20 +144,11 @@ const App: React.FC = () => {
       }
 
       try {
-        // Run BlazeFace first (faster, better for faces), then COCO-SSD as backup
+        // Run BlazeFace detection (fast & accurate for faces/heads)
         const faceDetections = await faceDetector.estimateFaces(video, false);
 
-        // Only run COCO-SSD if BlazeFace found nothing
-        let validPersons: any[] = [];
-        if (faceDetections.length === 0) {
-          const personDetections = await cocoDetector.detect(video);
-          validPersons = personDetections.filter(
-            pred => pred.class === 'person' && pred.score > 0.05
-          );
-        }
-
-          // Clear previous drawings
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Clear previous drawings
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
 
           // Calculate video display dimensions (object-cover)
           const videoAspect = video.videoWidth / video.videoHeight;
@@ -182,9 +168,8 @@ const App: React.FC = () => {
           }
 
           const headRegions: FaceRegion[] = [];
-          const processedRegions = new Set<string>();
 
-          // Process BlazeFace detections (higher priority for faces)
+          // Process BlazeFace detections
           faceDetections.forEach((face: any) => {
             const [x, y] = face.topLeft;
             const [x2, y2] = face.bottomRight;
@@ -219,10 +204,6 @@ const App: React.FC = () => {
             const growthCenterY = headCenterY + headRadius * 0.3; // Move down 30% of radius
             const growthRadius = headRadius * 0.5; // 50% of head radius
 
-            // Store region
-            const regionKey = `${Math.round(headCenterX)},${Math.round(headCenterY)}`;
-            processedRegions.add(regionKey);
-
             headRegions.push({
               centerX: headCenterX / canvas.width,
               centerY: headCenterY / canvas.height,
@@ -234,76 +215,27 @@ const App: React.FC = () => {
             });
           });
 
-          // Process COCO-SSD person detections (only if not already detected by BlazeFace)
-          validPersons.forEach((detection) => {
-            const [x, y, width, height] = detection.bbox;
-
-            // Convert to canvas coordinates
-            const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
-            const canvasY = offsetY + (y / video.videoHeight) * drawHeight;
-            const canvasWidth = (width / video.videoWidth) * drawWidth;
-            const canvasHeight = (height / video.videoHeight) * drawHeight;
-
-            // Estimate head position: top 18% of person bbox
-            const headHeight = canvasHeight * 0.18;
-            const headCenterX = canvasX + canvasWidth / 2;
-            const headCenterY = canvasY + headHeight / 2;
-
-            // Check if this region already processed
-            const regionKey = `${Math.round(headCenterX)},${Math.round(headCenterY)}`;
-            if (processedRegions.has(regionKey)) return;
-
-            const headRadius = Math.min(canvasWidth * 0.35, canvasHeight * 0.12);
-
-            // Draw circle with 2pt semi-transparent line
-            ctx.beginPath();
-            ctx.arc(headCenterX, headCenterY, headRadius, 0, 2 * Math.PI);
-            ctx.strokeStyle = 'rgba(0, 255, 0, 0.6)';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-
-            // Draw detection box
-            ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
-
-            // Calculate GROWTH region - smaller circle in lower-middle part of head
-            const growthCenterX = headCenterX;
-            const growthCenterY = headCenterY + headRadius * 0.3; // Move down 30% of radius
-            const growthRadius = headRadius * 0.5; // 50% of head radius
-
-            headRegions.push({
-              centerX: headCenterX / canvas.width,
-              centerY: headCenterY / canvas.height,
-              radius: headRadius / Math.max(canvas.width, canvas.height),
-              confidence: detection.score,
-              growthCenterX: growthCenterX / canvas.width,
-              growthCenterY: growthCenterY / canvas.height,
-              growthRadius: growthRadius / Math.max(canvas.width, canvas.height)
-            });
-          });
-
           setDetectedHeads(headRegions);
 
-          // AUTO-CAPTURE LOGIC: If statues detected for 3 consecutive frames, auto-capture
+          // AUTO-CAPTURE LOGIC: If faces detected for 2 consecutive frames, auto-capture
           if (headRegions.length > 0) {
             detectionStableCountRef.current++;
 
-            // After 3 stable detections (about 900ms), auto-trigger capture
-            if (detectionStableCountRef.current >= 3 && !autoCaptureFiredRef.current) {
-              console.log("AUTO-CAPTURE: Statues detected for 3 frames - triggering automatic capture!");
+            // After 2 stable detections (about 400ms), auto-trigger capture - FAST!
+            if (detectionStableCountRef.current >= 2 && !autoCaptureFiredRef.current) {
+              console.log("AUTO-CAPTURE: Faces detected for 2 frames - triggering FAST capture!");
               autoCaptureFiredRef.current = true;
 
-              // Trigger capture after a short delay
+              // Trigger capture immediately
               setTimeout(() => {
                 handleInteraction();
-              }, 100);
+              }, 50);
             }
 
-            setStatusText(`${headRegions.length} DETECTED - AUTO-CAPTURING...`);
+            setStatusText(`${headRegions.length} DETECTED - CAPTURING...`);
           } else {
             detectionStableCountRef.current = 0;
-            setStatusText("Point camera at statues");
+            setStatusText("Point camera at faces");
           }
 
       } catch (err) {
@@ -311,9 +243,9 @@ const App: React.FC = () => {
       }
     };
 
-    // Run detection every 300ms instead of every frame (reduces load significantly)
-    detectObjects();
-    const intervalId = setInterval(detectObjects, 300);
+    // Run detection every 200ms (faster response, still efficient)
+    detectFaces();
+    const intervalId = setInterval(detectFaces, 200);
     detectionIntervalRef.current = intervalId as any;
 
     return () => {
@@ -328,10 +260,10 @@ const App: React.FC = () => {
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
 
-        // Check if at least one statue is detected
+        // Check if at least one face is detected
         if (detectedHeads.length === 0) {
-          setStatusText("NO STATUES DETECTED");
-          setTimeout(() => setStatusText("Point camera at statues"), 2000);
+          setStatusText("NO FACES DETECTED");
+          setTimeout(() => setStatusText("Point camera at faces"), 2000);
           return;
         }
 
@@ -383,7 +315,7 @@ const App: React.FC = () => {
     setAnalysisResult(null);
     setGrowthTrigger(0);
     setDetectedHeads([]);
-    setStatusText("Point camera at statues");
+    setStatusText("Point camera at faces");
     detectionStableCountRef.current = 0;
     autoCaptureFiredRef.current = false;
   };
