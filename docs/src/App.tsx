@@ -97,11 +97,11 @@ const App: React.FC = () => {
     startCamera();
   }, []);
 
-  // Dual Detection Loop - BlazeFace + COCO-SSD
+  // Dual Detection Loop - BlazeFace + COCO-SSD (OPTIMIZED - Lower frequency)
   useEffect(() => {
     if (gameState !== GameState.IDLE) {
       if (detectionIntervalRef.current) {
-        cancelAnimationFrame(detectionIntervalRef.current);
+        clearInterval(detectionIntervalRef.current);
         detectionIntervalRef.current = null;
       }
       return;
@@ -110,9 +110,7 @@ const App: React.FC = () => {
     if (!isDetectorReady || !objectDetectorRef.current || !faceDetectorRef.current) return;
     if (!videoRef.current || !overlayCanvasRef.current) return;
 
-    console.log("Starting dual detection (faces + persons)...");
-
-    let lastVideoTime = -1;
+    console.log("Starting optimized dual detection (300ms interval)...");
 
     const detectObjects = async () => {
       const video = videoRef.current;
@@ -121,7 +119,6 @@ const App: React.FC = () => {
       const faceDetector = faceDetectorRef.current;
 
       if (!video || !canvas || !cocoDetector || !faceDetector || video.videoWidth === 0) {
-        detectionIntervalRef.current = requestAnimationFrame(detectObjects);
         return;
       }
 
@@ -137,21 +134,18 @@ const App: React.FC = () => {
         return;
       }
 
-      // Only detect if video frame has updated
-      if (video.currentTime !== lastVideoTime) {
-        lastVideoTime = video.currentTime;
+      try {
+        // Run BlazeFace first (faster, better for faces), then COCO-SSD as backup
+        const faceDetections = await faceDetector.estimateFaces(video, false);
 
-        try {
-          // Run both detectors in parallel
-          const [faceDetections, personDetections] = await Promise.all([
-            faceDetector.estimateFaces(video, false),
-            cocoDetector.detect(video)
-          ]);
-
-          // Filter person detections
-          const validPersons = personDetections.filter(
+        // Only run COCO-SSD if BlazeFace found nothing
+        let validPersons: any[] = [];
+        if (faceDetections.length === 0) {
+          const personDetections = await cocoDetector.detect(video);
+          validPersons = personDetections.filter(
             pred => pred.class === 'person' && pred.score > 0.05
           );
+        }
 
           // Clear previous drawings
           ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -268,19 +262,19 @@ const App: React.FC = () => {
             setStatusText("Point camera at statues");
           }
 
-        } catch (err) {
-          console.error("Detection error:", err);
-        }
+      } catch (err) {
+        console.error("Detection error:", err);
       }
-
-      detectionIntervalRef.current = requestAnimationFrame(detectObjects);
     };
 
+    // Run detection every 300ms instead of every frame (reduces load significantly)
     detectObjects();
+    const intervalId = setInterval(detectObjects, 300);
+    detectionIntervalRef.current = intervalId as any;
 
     return () => {
       if (detectionIntervalRef.current) {
-        cancelAnimationFrame(detectionIntervalRef.current);
+        clearInterval(detectionIntervalRef.current);
       }
     };
   }, [gameState, isDetectorReady, viewport.width, viewport.height]);
@@ -362,34 +356,27 @@ const App: React.FC = () => {
         muted
         className={`absolute top-0 left-0 w-full h-full object-cover transition-opacity duration-700 ${capturedImage ? 'opacity-0' : 'opacity-100'}`}
         style={{
-             filter: 'contrast(1.1) brightness(1.1) saturate(0.8)',
-             pointerEvents: 'none'
+             filter: 'contrast(1.1) brightness(1.1) saturate(0.8)'
         }}
         onPause={(e) => {
           // Force video to keep playing if paused
-          e.currentTarget.play();
+          const video = e.currentTarget;
+          console.log("Video paused - forcing play");
+          setTimeout(() => video.play(), 0);
+        }}
+        onSuspend={(e) => {
+          // Prevent video suspension
+          const video = e.currentTarget;
+          console.log("Video suspended - forcing play");
+          setTimeout(() => video.play(), 0);
+        }}
+        onEnded={(e) => {
+          // Prevent video end
+          const video = e.currentTarget;
+          video.currentTime = 0;
+          video.play();
         }}
       />
-
-      {/* BLOCK ALL VIDEO INTERACTIONS - Prevent iOS play/pause overlay */}
-      {!capturedImage && (
-        <div
-          className="absolute top-0 left-0 w-full h-full"
-          style={{
-            zIndex: 5,
-            pointerEvents: 'auto',
-            background: 'transparent'
-          }}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onTouchStart={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-        />
-      )}
 
       {/* --- LAYER 1.5: DETECTION OVERLAY --- */}
       {!capturedImage && gameState === GameState.IDLE && (
