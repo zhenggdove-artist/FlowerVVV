@@ -229,6 +229,11 @@ const App: React.FC = () => {
             ctx.lineWidth = 1;
             ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
 
+            // Calculate GROWTH region - smaller circle in lower-middle part of head
+            const growthCenterX = headCenterX;
+            const growthCenterY = headCenterY + headRadius * 0.3; // Move down 30% of radius
+            const growthRadius = headRadius * 0.5; // 50% of head radius
+
             // Store region
             const regionKey = `${Math.round(headCenterX)},${Math.round(headCenterY)}`;
             processedRegions.add(regionKey);
@@ -237,7 +242,10 @@ const App: React.FC = () => {
               centerX: headCenterX / canvas.width,
               centerY: headCenterY / canvas.height,
               radius: headRadius / Math.max(canvas.width, canvas.height),
-              confidence: face.probability ? face.probability[0] : 0.9
+              confidence: face.probability ? face.probability[0] : 0.9,
+              growthCenterX: growthCenterX / canvas.width,
+              growthCenterY: growthCenterY / canvas.height,
+              growthRadius: growthRadius / Math.max(canvas.width, canvas.height)
             });
           });
 
@@ -274,11 +282,19 @@ const App: React.FC = () => {
             ctx.lineWidth = 1;
             ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
 
+            // Calculate GROWTH region - smaller circle in lower-middle part of head
+            const growthCenterX = headCenterX;
+            const growthCenterY = headCenterY + headRadius * 0.3; // Move down 30% of radius
+            const growthRadius = headRadius * 0.5; // 50% of head radius
+
             headRegions.push({
               centerX: headCenterX / canvas.width,
               centerY: headCenterY / canvas.height,
               radius: headRadius / Math.max(canvas.width, canvas.height),
-              confidence: detection.score
+              confidence: detection.score,
+              growthCenterX: growthCenterX / canvas.width,
+              growthCenterY: growthCenterY / canvas.height,
+              growthRadius: growthRadius / Math.max(canvas.width, canvas.height)
             });
           });
 

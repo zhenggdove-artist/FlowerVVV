@@ -10,6 +10,10 @@ export interface FaceRegion {
   // Radius for circular region (normalized 0-1)
   radius: number;
   confidence: number;
+  // Growth region - smaller circle in lower part of detected head
+  growthCenterX?: number;
+  growthCenterY?: number;
+  growthRadius?: number;
 }
 
 export interface AnalysisResult {
