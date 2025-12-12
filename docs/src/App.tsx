@@ -360,13 +360,14 @@ const App: React.FC = () => {
         autoPlay
         playsInline
         muted
-        controls={false}
-        disablePictureInPicture
-        disableRemotePlayback
         className={`absolute top-0 left-0 w-full h-full object-cover transition-opacity duration-700 ${capturedImage ? 'opacity-0' : 'opacity-100'}`}
         style={{
-             filter: 'contrast(1.1) brightness(1.1) saturate(0.8)',
-             pointerEvents: 'none'
+             filter: 'contrast(1.1) brightness(1.1) saturate(0.8)'
+        }}
+        onLoadedMetadata={(e) => {
+          const video = e.currentTarget;
+          video.removeAttribute('controls');
+          video.controls = false;
         }}
       />
 
