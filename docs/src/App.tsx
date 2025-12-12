@@ -29,6 +29,8 @@ const App: React.FC = () => {
   const initClickCountRef = useRef<number>(0);
 
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
+  const detectionStableCountRef = useRef<number>(0);
+  const autoCaptureFiredRef = useRef<boolean>(false);
 
   console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "heads:", detectedHeads.length);
 
@@ -300,10 +302,24 @@ const App: React.FC = () => {
 
           setDetectedHeads(headRegions);
 
-          // Update status text
+          // AUTO-CAPTURE LOGIC: If statues detected for 3 consecutive frames, auto-capture
           if (headRegions.length > 0) {
-            setStatusText(`${headRegions.length} DETECTED - TAP TO CAPTURE`);
+            detectionStableCountRef.current++;
+
+            // After 3 stable detections (about 900ms), auto-trigger capture
+            if (detectionStableCountRef.current >= 3 && !autoCaptureFiredRef.current) {
+              console.log("AUTO-CAPTURE: Statues detected for 3 frames - triggering automatic capture!");
+              autoCaptureFiredRef.current = true;
+
+              // Trigger capture after a short delay
+              setTimeout(() => {
+                handleInteraction();
+              }, 100);
+            }
+
+            setStatusText(`${headRegions.length} DETECTED - AUTO-CAPTURING...`);
           } else {
+            detectionStableCountRef.current = 0;
             setStatusText("Point camera at statues");
           }
 
@@ -392,6 +408,8 @@ const App: React.FC = () => {
     setGrowthTrigger(0);
     setDetectedHeads([]);
     setStatusText("Point camera at statues");
+    detectionStableCountRef.current = 0;
+    autoCaptureFiredRef.current = false;
   };
 
   return (
