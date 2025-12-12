@@ -1,9 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { AnalysisResult } from '../types.ts';
-
-// Use relative path for better compatibility with GitHub Pages
-const maskImage = './02.jpg';
 
 interface PlantGrowthProps {
   analysis: AnalysisResult | null;
@@ -101,78 +98,71 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
   const startTimeRef = useRef<number>(Date.now());
 
-  // --- IMAGE PROCESSING: RED MASK DETECTION ---
+  // --- FACE REGION PROCESSING: GENERATE POINTS FROM DETECTED FACES ---
   useEffect(() => {
     if (!capturedImage || !analysis || !active) return;
+    if (!analysis.faceRegions || analysis.faceRegions.length === 0) return;
 
-    const processImage = async () => {
-      // Load the mask image (02.jpg with red area)
-      const maskImg = new Image();
-      maskImg.src = maskImage;
-      await new Promise((resolve) => { maskImg.onload = resolve; });
-
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      // Calculate object-cover scaling to match CSS
-      const scale = Math.max(width / maskImg.width, height / maskImg.height);
-      const offsetX = (width - maskImg.width * scale) / 2;
-      const offsetY = (height - maskImg.height * scale) / 2;
-
-      // Draw mask image
-      ctx.drawImage(maskImg, offsetX, offsetY, maskImg.width * scale, maskImg.height * scale);
-
-      console.log("=== PlantGrowth Debug (Mask Mode) ===");
-      console.log("Mask Image size:", maskImg.width, "x", maskImg.height);
+    const processImage = () => {
+      console.log("=== PlantGrowth Debug (Face Detection Mode) ===");
       console.log("Canvas size:", width, "x", height);
-      console.log("Scale:", scale);
-      console.log("Offset:", offsetX, offsetY);
+      console.log("Face regions count:", analysis.faceRegions?.length);
 
-      try {
-        const imageData = ctx.getImageData(0, 0, width, height);
-        const data = imageData.data;
+      const ePoints: number[] = [];
+      const sPoints: number[] = [];
 
-        const ePoints: number[] = [];
-        const sPoints: number[] = [];
+      // Process each detected face
+      analysis.faceRegions.forEach((face, faceIndex) => {
+        console.log(`Face ${faceIndex}:`, face);
 
-        // Detect red pixels in the mask (RGB where R > 200, G < 100, B < 100)
-        for (let py = 0; py < height; py += 3) {
-            for (let px = 0; px < width; px += 3) {
-                const idx = (py * width + px) * 4;
-                const r = data[idx];
-                const g = data[idx + 1];
-                const b = data[idx + 2];
+        // Convert normalized coordinates to canvas coordinates
+        const centerX = face.centerX * width;
+        const centerY = face.centerY * height;
+        const radius = face.radius * Math.max(width, height);
 
-                // Check if pixel is red
-                if (r > 200 && g < 100 && b < 100) {
-                    const threeX = px - (width / 2);
-                    const threeY = (height / 2) - py;
+        console.log(`  Canvas coords - Center: (${centerX}, ${centerY}), Radius: ${radius}`);
 
-                    // Randomly assign to edge or surface
-                    if (Math.random() < 0.3) {
-                        ePoints.push(threeX, threeY);
-                    } else {
-                        sPoints.push(threeX, threeY);
-                    }
-                }
+        // Generate points within the circular face region
+        // Sample points in a grid within the bounding box of the circle
+        const step = 4; // Sampling density
+        const minX = Math.max(0, centerX - radius);
+        const maxX = Math.min(width, centerX + radius);
+        const minY = Math.max(0, centerY - radius);
+        const maxY = Math.min(height, centerY + radius);
+
+        for (let py = minY; py < maxY; py += step) {
+          for (let px = minX; px < maxX; px += step) {
+            // Check if point is inside the circle
+            const dx = px - centerX;
+            const dy = py - centerY;
+            const distSq = dx * dx + dy * dy;
+
+            if (distSq <= radius * radius) {
+              // Convert to Three.js coordinates (center origin)
+              const threeX = px - (width / 2);
+              const threeY = (height / 2) - py;
+
+              // Points near the edge (outer 30% of radius) go to edge points
+              // Inner points go to surface points
+              const distFromCenter = Math.sqrt(distSq);
+              if (distFromCenter > radius * 0.7) {
+                ePoints.push(threeX, threeY);
+              } else {
+                sPoints.push(threeX, threeY);
+              }
             }
+          }
         }
+      });
 
-        console.log("Red mask points - Edges:", ePoints.length / 2, "Surface:", sPoints.length / 2);
-        console.log("======================================");
+      console.log("Face region points - Edges:", ePoints.length / 2, "Surface:", sPoints.length / 2);
+      console.log("======================================");
 
-        edgePointsRef.current = new Float32Array(ePoints);
-        edgeCountRef.current = ePoints.length / 2;
+      edgePointsRef.current = new Float32Array(ePoints);
+      edgeCountRef.current = ePoints.length / 2;
 
-        surfacePointsRef.current = new Float32Array(sPoints);
-        surfaceCountRef.current = sPoints.length / 2;
-
-      } catch (e) {
-        console.error("Mask detection failed", e);
-      }
+      surfacePointsRef.current = new Float32Array(sPoints);
+      surfaceCountRef.current = sPoints.length / 2;
     };
 
     processImage();

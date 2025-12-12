@@ -3,10 +3,21 @@ export interface Point {
   y: number;
 }
 
+export interface FaceRegion {
+  // Center position of the face (normalized 0-1)
+  centerX: number;
+  centerY: number;
+  // Radius for circular region (normalized 0-1)
+  radius: number;
+  confidence: number;
+}
+
 export interface AnalysisResult {
   detected: boolean;
-  // Bounding box [ymin, xmin, ymax, xmax] (0-1000)
-  box_2d: [number, number, number, number]; 
+  // Multiple face regions for multi-person support
+  faceRegions?: FaceRegion[];
+  // Legacy bounding box for backward compatibility [ymin, xmin, ymax, xmax] (0-1000)
+  box_2d?: [number, number, number, number];
   confidence: number;
   label: string;
 }
