@@ -25,6 +25,8 @@ const App: React.FC = () => {
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [detectedHeads, setDetectedHeads] = useState<FaceRegion[]>([]);
   const [isDetectorReady, setIsDetectorReady] = useState<boolean>(false);
+  const [isInitialized, setIsInitialized] = useState<boolean>(false);
+  const initClickCountRef = useRef<number>(0);
 
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
 
@@ -87,6 +89,30 @@ const App: React.FC = () => {
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+
+          // Wait for video to be ready, then auto-click twice to dismiss play button
+          videoRef.current.onloadedmetadata = () => {
+            console.log("Video loaded - executing initialization clicks");
+            setTimeout(() => {
+              // First click
+              const clickEvent = new MouseEvent('click', { bubbles: true });
+              document.body.dispatchEvent(clickEvent);
+              console.log("Init click 1/2");
+
+              setTimeout(() => {
+                // Second click
+                const clickEvent2 = new MouseEvent('click', { bubbles: true });
+                document.body.dispatchEvent(clickEvent2);
+                console.log("Init click 2/2");
+
+                // Mark as initialized after both clicks
+                setTimeout(() => {
+                  setIsInitialized(true);
+                  console.log("Initialization complete - detection enabled");
+                }, 500);
+              }, 300);
+            }, 500);
+          };
         }
       } catch (err) {
         console.error("Camera access denied:", err);
@@ -99,6 +125,9 @@ const App: React.FC = () => {
 
   // Dual Detection Loop - BlazeFace + COCO-SSD (OPTIMIZED - Lower frequency)
   useEffect(() => {
+    // Don't start detection until initialization is complete
+    if (!isInitialized) return;
+
     if (gameState !== GameState.IDLE) {
       if (detectionIntervalRef.current) {
         clearInterval(detectionIntervalRef.current);
@@ -277,9 +306,16 @@ const App: React.FC = () => {
         clearInterval(detectionIntervalRef.current);
       }
     };
-  }, [gameState, isDetectorReady, viewport.width, viewport.height]);
+  }, [gameState, isDetectorReady, viewport.width, viewport.height, isInitialized]);
 
   const handleInteraction = useCallback(async () => {
+    // Skip actual action during initialization clicks
+    if (!isInitialized) {
+      initClickCountRef.current++;
+      console.log(`Initialization click ${initClickCountRef.current}/2 - skipping action`);
+      return;
+    }
+
     // IF IDLE: Capture and detect heads
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
@@ -331,7 +367,7 @@ const App: React.FC = () => {
         setGrowthTrigger(prev => prev + 1);
     }
 
-  }, [gameState, detectedHeads]);
+  }, [gameState, detectedHeads, isInitialized]);
 
   const handleReset = () => {
     setGameState(GameState.IDLE);
