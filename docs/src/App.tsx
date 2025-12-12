@@ -26,7 +26,6 @@ const App: React.FC = () => {
   const [detectedHeads, setDetectedHeads] = useState<FaceRegion[]>([]);
   const [isDetectorReady, setIsDetectorReady] = useState<boolean>(false);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
-  const initClickCountRef = useRef<number>(0);
 
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
   const detectionStableCountRef = useRef<number>(0);
@@ -92,28 +91,12 @@ const App: React.FC = () => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
 
-          // Wait for video to be ready, then auto-click twice FAST to dismiss play button
+          // Auto-start detection immediately after video loads
           videoRef.current.onloadedmetadata = () => {
-            console.log("Video loaded - executing FAST initialization clicks");
-            setTimeout(() => {
-              // First click
-              const clickEvent = new MouseEvent('click', { bubbles: true });
-              document.body.dispatchEvent(clickEvent);
-              console.log("Init click 1/2");
-
-              setTimeout(() => {
-                // Second click - FAST
-                const clickEvent2 = new MouseEvent('click', { bubbles: true });
-                document.body.dispatchEvent(clickEvent2);
-                console.log("Init click 2/2");
-
-                // Mark as initialized immediately after both clicks
-                setTimeout(() => {
-                  setIsInitialized(true);
-                  console.log("Initialization complete - detection enabled");
-                }, 100);
-              }, 50);
-            }, 50);
+            console.log("Video loaded - auto-starting detection immediately");
+            // Mark as initialized immediately to start detection
+            setIsInitialized(true);
+            console.log("Detection enabled - auto-capture will trigger when statues detected");
           };
         }
       } catch (err) {
@@ -341,13 +324,6 @@ const App: React.FC = () => {
   }, [gameState, isDetectorReady, viewport.width, viewport.height, isInitialized]);
 
   const handleInteraction = useCallback(async () => {
-    // Skip actual action during initialization clicks
-    if (!isInitialized) {
-      initClickCountRef.current++;
-      console.log(`Initialization click ${initClickCountRef.current}/2 - skipping action`);
-      return;
-    }
-
     // IF IDLE: Capture and detect heads
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
@@ -399,7 +375,7 @@ const App: React.FC = () => {
         setGrowthTrigger(prev => prev + 1);
     }
 
-  }, [gameState, detectedHeads, isInitialized]);
+  }, [gameState, detectedHeads]);
 
   const handleReset = () => {
     setGameState(GameState.IDLE);
