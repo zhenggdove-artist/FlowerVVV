@@ -354,27 +354,31 @@ const App: React.FC = () => {
         autoPlay
         playsInline
         muted
-        className={`absolute top-0 left-0 w-full h-full object-cover transition-opacity duration-700 ${capturedImage ? 'opacity-0' : 'opacity-100'}`}
+        webkit-playsinline="true"
+        x5-playsinline="true"
+        x-webkit-airplay="allow"
+        className={`absolute top-0 left-0 transition-opacity duration-700 ${capturedImage ? 'opacity-0' : 'opacity-100'}`}
         style={{
-             filter: 'contrast(1.1) brightness(1.1) saturate(0.8)'
+          filter: 'contrast(1.1) brightness(1.1) saturate(0.8)',
+          width: '100.5%',
+          height: '100.5%',
+          left: '-0.25%',
+          top: '-0.25%',
+          objectFit: 'cover'
+        }}
+        onLoadedMetadata={(e) => {
+          const video = e.currentTarget;
+          video.play().catch(err => console.log("Play error:", err));
+        }}
+        onCanPlay={(e) => {
+          const video = e.currentTarget;
+          if (video.paused) {
+            video.play().catch(err => console.log("Play error:", err));
+          }
         }}
         onPause={(e) => {
-          // Force video to keep playing if paused
           const video = e.currentTarget;
-          console.log("Video paused - forcing play");
-          setTimeout(() => video.play(), 0);
-        }}
-        onSuspend={(e) => {
-          // Prevent video suspension
-          const video = e.currentTarget;
-          console.log("Video suspended - forcing play");
-          setTimeout(() => video.play(), 0);
-        }}
-        onEnded={(e) => {
-          // Prevent video end
-          const video = e.currentTarget;
-          video.currentTime = 0;
-          video.play();
+          video.play().catch(err => console.log("Play error:", err));
         }}
       />
 
