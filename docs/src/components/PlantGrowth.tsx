@@ -53,13 +53,14 @@ const vertexShader = `
 
 const fragmentShader = `
   varying vec3 vColor;
-  
+
   void main() {
     // Circular particles
     vec2 coord = gl_PointCoord - vec2(0.5);
     if(length(coord) > 0.5) discard;
-    
-    gl_FragColor = vec4(vColor, 0.9);
+
+    // Reduced opacity to prevent white glow when particles overlap
+    gl_FragColor = vec4(vColor, 0.5);
   }
 `;
 
