@@ -90,9 +90,9 @@ const App: React.FC = () => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
 
-          // Wait for video to be ready, then auto-click twice to dismiss play button
+          // Wait for video to be ready, then auto-click twice FAST to dismiss play button
           videoRef.current.onloadedmetadata = () => {
-            console.log("Video loaded - executing initialization clicks");
+            console.log("Video loaded - executing FAST initialization clicks");
             setTimeout(() => {
               // First click
               const clickEvent = new MouseEvent('click', { bubbles: true });
@@ -100,18 +100,18 @@ const App: React.FC = () => {
               console.log("Init click 1/2");
 
               setTimeout(() => {
-                // Second click
+                // Second click - FAST
                 const clickEvent2 = new MouseEvent('click', { bubbles: true });
                 document.body.dispatchEvent(clickEvent2);
                 console.log("Init click 2/2");
 
-                // Mark as initialized after both clicks
+                // Mark as initialized immediately after both clicks
                 setTimeout(() => {
                   setIsInitialized(true);
                   console.log("Initialization complete - detection enabled");
-                }, 500);
-              }, 300);
-            }, 500);
+                }, 100);
+              }, 50);
+            }, 50);
           };
         }
       } catch (err) {
