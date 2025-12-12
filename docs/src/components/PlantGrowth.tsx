@@ -123,8 +123,8 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
         console.log(`  Canvas coords - Center: (${centerX}, ${centerY}), Radius: ${radius}`);
 
         // Generate points within the circular face region
-        // Sample points in a grid within the bounding box of the circle
-        const step = 4; // Sampling density
+        // Use SMALLER step for denser sampling to ensure coverage
+        const step = 2; // Increased density (was 4)
         const minX = Math.max(0, centerX - radius);
         const maxX = Math.min(width, centerX + radius);
         const minY = Math.max(0, centerY - radius);
@@ -132,20 +132,21 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
         for (let py = minY; py < maxY; py += step) {
           for (let px = minX; px < maxX; px += step) {
-            // Check if point is inside the circle
+            // Check if point is STRICTLY inside the circle (with 5% safety margin)
             const dx = px - centerX;
             const dy = py - centerY;
             const distSq = dx * dx + dy * dy;
+            const safeRadius = radius * 0.95; // 5% safety margin to stay inside
 
-            if (distSq <= radius * radius) {
+            if (distSq <= safeRadius * safeRadius) {
               // Convert to Three.js coordinates (center origin)
               const threeX = px - (width / 2);
               const threeY = (height / 2) - py;
 
-              // Points near the edge (outer 30% of radius) go to edge points
+              // Points near the edge (outer 35% of radius) go to edge points
               // Inner points go to surface points
               const distFromCenter = Math.sqrt(distSq);
-              if (distFromCenter > radius * 0.7) {
+              if (distFromCenter > safeRadius * 0.65) {
                 ePoints.push(threeX, threeY);
               } else {
                 sPoints.push(threeX, threeY);

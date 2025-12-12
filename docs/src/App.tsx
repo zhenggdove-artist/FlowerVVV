@@ -139,9 +139,9 @@ const App: React.FC = () => {
           // Detect objects (looking for "person" class)
           const predictions = await detector.detect(video);
 
-          // Filter for person detections with lower threshold for distant statues
+          // Filter for person detections with very low threshold for distant statues
           const personDetections = predictions.filter(
-            pred => pred.class === 'person' && pred.score > 0.3 // Lower threshold for statues
+            pred => pred.class === 'person' && pred.score > 0.15 // Very low threshold for distant statues
           );
 
           // Clear previous drawings
@@ -176,34 +176,20 @@ const App: React.FC = () => {
             const canvasWidth = (width / video.videoWidth) * drawWidth;
             const canvasHeight = (height / video.videoHeight) * drawHeight;
 
-            // Estimate head position: top 25% of the person bbox
-            const headHeight = canvasHeight * 0.25;
+            // Estimate head position: top 20% of the person bbox (more conservative)
+            const headHeight = canvasHeight * 0.20;
             const headCenterX = canvasX + canvasWidth / 2;
             const headCenterY = canvasY + headHeight / 2;
 
-            // Head radius: use the width of the person bbox
-            const headRadius = Math.max(canvasWidth * 0.4, canvasHeight * 0.15);
+            // Head radius: smaller, tighter fit to avoid background (30% of width or 12% of height)
+            const headRadius = Math.min(canvasWidth * 0.35, canvasHeight * 0.12);
 
-            // Draw circle around head
+            // Draw circle around head (no text labels)
             ctx.beginPath();
             ctx.arc(headCenterX, headCenterY, headRadius, 0, 2 * Math.PI);
             ctx.strokeStyle = '#00FF00';
             ctx.lineWidth = 4;
             ctx.stroke();
-
-            // Draw detection box for debugging (optional)
-            ctx.strokeStyle = 'rgba(0, 255, 0, 0.3)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
-
-            // Draw confidence text
-            ctx.fillStyle = '#00FF00';
-            ctx.font = '14px monospace';
-            ctx.fillText(
-              `Person ${detection.score.toFixed(2)}`,
-              headCenterX - headRadius,
-              headCenterY - headRadius - 10
-            );
 
             // Store head region (normalized coordinates 0-1)
             headRegions.push({
