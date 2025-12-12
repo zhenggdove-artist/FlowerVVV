@@ -85,7 +85,7 @@ const App: React.FC = () => {
         console.log("Starting camera...");
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: 'user', // Changed to 'user' for front camera (better for face detection)
+            facingMode: 'environment', // Use back camera
             width: { ideal: 1920 },
             height: { ideal: 1080 }
           },
