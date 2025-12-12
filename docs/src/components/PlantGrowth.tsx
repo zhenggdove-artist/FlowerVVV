@@ -340,17 +340,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     // Update Shader Time
     materialRef.current.uniforms.uTime.value = time;
 
-    // HUD Context
-    const ctx = hudCanvasRef.current?.getContext('2d');
-    if (ctx) {
-        ctx.clearRect(0, 0, width, height);
-        ctx.strokeStyle = 'rgba(250, 250, 250, 0.9)';
-        ctx.fillStyle = '#00FF00';
-        ctx.lineWidth = 1;
-        ctx.font = '10px monospace';
-    }
-
-    // Process Active Heads
+    // Process Active Heads (HUD drawing removed to eliminate green lines)
     // Filter out dead heads from tracking array
     const nextActiveHeads: number[] = [];
 
@@ -359,36 +349,6 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
         const x = positions[i * 3];
         const y = positions[i * 3 + 1];
-        
-        // Draw HUD for this head
-        if (ctx) {
-            // Map 3D coord back to 2D Canvas coord
-            const cx = x + width / 2;
-            const cy = height / 2 - y;
-
-            // Box
-            ctx.strokeRect(cx - 10, cy - 10, 20, 20);
-            
-            // Text
-            if (Math.random() > 0.8) { // flicker text
-                 ctx.fillText((Math.random()).toFixed(3), cx + 12, cy - 2);
-            }
-            
-            // Connecting Lines
-            if (nextActiveHeads.length > 0 && Math.random() > 0.5) {
-                const neighborIdx = nextActiveHeads[nextActiveHeads.length - 1];
-                const nx = positions[neighborIdx * 3] + width / 2;
-                const ny = height / 2 - positions[neighborIdx * 3 + 1];
-                
-                // Only draw if relatively close
-                if (Math.abs(nx - cx) < 100 && Math.abs(ny - cy) < 100) {
-                    ctx.beginPath();
-                    ctx.moveTo(cx, cy);
-                    ctx.lineTo(nx, ny);
-                    ctx.stroke();
-                }
-            }
-        }
 
         // Move Head
         positions[i * 3] += velocities[i * 3];
@@ -442,7 +402,6 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
   return (
     <>
         <div ref={mountRef} className="absolute inset-0 pointer-events-none z-10" />
-        <canvas ref={hudCanvasRef} width={width} height={height} className="absolute inset-0 pointer-events-none z-15 mix-blend-screen opacity-70" />
     </>
   );
 };

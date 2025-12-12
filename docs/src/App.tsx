@@ -3,17 +3,19 @@ import DreamOverlay from './components/DreamOverlay.tsx';
 import PlantGrowth from './components/PlantGrowth.tsx';
 import { GameState, AnalysisResult, FaceRegion } from './types.ts';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
+import * as blazeface from '@tensorflow-models/blazeface';
 import '@tensorflow/tfjs';
 
 const App: React.FC = () => {
   console.log("###################################################");
-  console.log("APP.TSX: STATUE/PERSON DETECTION MODE!");
+  console.log("APP.TSX: DUAL DETECTION MODE (COCO-SSD + BLAZEFACE)!");
   console.log("###################################################");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const objectDetectorRef = useRef<cocoSsd.ObjectDetection | null>(null);
+  const faceDetectorRef = useRef<blazeface.BlazeFaceModel | null>(null);
   const detectionIntervalRef = useRef<number | null>(null);
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
@@ -35,31 +37,34 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Initialize COCO-SSD Object Detector
+  // Initialize COCO-SSD + BlazeFace
   useEffect(() => {
     let cancelled = false;
 
-    const initDetector = async () => {
+    const initDetectors = async () => {
       try {
-        console.log("Initializing COCO-SSD Object Detector...");
+        console.log("Initializing detectors...");
 
-        const model = await cocoSsd.load({
-          base: 'lite_mobilenet_v2' // Faster, better for mobile
-        });
+        // Load both models in parallel
+        const [cocoModel, blazeModel] = await Promise.all([
+          cocoSsd.load({ base: 'lite_mobilenet_v2' }),
+          blazeface.load()
+        ]);
 
         if (cancelled) return;
 
-        objectDetectorRef.current = model;
+        objectDetectorRef.current = cocoModel;
+        faceDetectorRef.current = blazeModel;
         setIsDetectorReady(true);
-        console.log("Object Detector initialized successfully");
+        console.log("Both detectors initialized successfully");
       } catch (err) {
-        console.error("Failed to initialize object detector:", err);
+        console.error("Failed to initialize detectors:", err);
         setStatusText("DETECTOR ERROR");
         setGameState(GameState.ERROR);
       }
     };
 
-    initDetector();
+    initDetectors();
 
     return () => {
       cancelled = true;
@@ -92,7 +97,7 @@ const App: React.FC = () => {
     startCamera();
   }, []);
 
-  // Object Detection Loop - Detect People/Statues
+  // Dual Detection Loop - BlazeFace + COCO-SSD
   useEffect(() => {
     if (gameState !== GameState.IDLE) {
       if (detectionIntervalRef.current) {
@@ -102,19 +107,20 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!isDetectorReady || !objectDetectorRef.current) return;
+    if (!isDetectorReady || !objectDetectorRef.current || !faceDetectorRef.current) return;
     if (!videoRef.current || !overlayCanvasRef.current) return;
 
-    console.log("Starting continuous person/statue detection...");
+    console.log("Starting dual detection (faces + persons)...");
 
     let lastVideoTime = -1;
 
     const detectObjects = async () => {
       const video = videoRef.current;
       const canvas = overlayCanvasRef.current;
-      const detector = objectDetectorRef.current;
+      const cocoDetector = objectDetectorRef.current;
+      const faceDetector = faceDetectorRef.current;
 
-      if (!video || !canvas || !detector || video.videoWidth === 0) {
+      if (!video || !canvas || !cocoDetector || !faceDetector || video.videoWidth === 0) {
         detectionIntervalRef.current = requestAnimationFrame(detectObjects);
         return;
       }
@@ -136,12 +142,15 @@ const App: React.FC = () => {
         lastVideoTime = video.currentTime;
 
         try {
-          // Detect objects (looking for "person" class)
-          const predictions = await detector.detect(video);
+          // Run both detectors in parallel
+          const [faceDetections, personDetections] = await Promise.all([
+            faceDetector.estimateFaces(video, false),
+            cocoDetector.detect(video)
+          ]);
 
-          // Filter for person detections with extremely low threshold for distant statues
-          const personDetections = predictions.filter(
-            pred => pred.class === 'person' && pred.score > 0.05 // Extremely low threshold for distant statues
+          // Filter person detections
+          const validPersons = personDetections.filter(
+            pred => pred.class === 'person' && pred.score > 0.05
           );
 
           // Clear previous drawings
@@ -165,38 +174,83 @@ const App: React.FC = () => {
           }
 
           const headRegions: FaceRegion[] = [];
+          const processedRegions = new Set<string>();
 
-          // Draw circles around detected person heads
-          personDetections.forEach((detection, idx) => {
-            const [x, y, width, height] = detection.bbox;
+          // Process BlazeFace detections (higher priority for faces)
+          faceDetections.forEach((face: any) => {
+            const [x, y] = face.topLeft;
+            const [x2, y2] = face.bottomRight;
+            const width = x2 - x;
+            const height = y2 - y;
 
-            // Convert bbox coordinates to canvas coordinates
+            // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
             const canvasY = offsetY + (y / video.videoHeight) * drawHeight;
             const canvasWidth = (width / video.videoWidth) * drawWidth;
             const canvasHeight = (height / video.videoHeight) * drawHeight;
 
-            // Estimate head position: top 20% of the person bbox (more conservative)
-            const headHeight = canvasHeight * 0.20;
+            // For face detection, the entire bbox IS the head
+            const headCenterX = canvasX + canvasWidth / 2;
+            const headCenterY = canvasY + canvasHeight / 2;
+            const headRadius = Math.max(canvasWidth, canvasHeight) * 0.6;
+
+            // Draw circle with 2pt semi-transparent line
+            ctx.beginPath();
+            ctx.arc(headCenterX, headCenterY, headRadius, 0, 2 * Math.PI);
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.6)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Draw detection box
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
+
+            // Store region
+            const regionKey = `${Math.round(headCenterX)},${Math.round(headCenterY)}`;
+            processedRegions.add(regionKey);
+
+            headRegions.push({
+              centerX: headCenterX / canvas.width,
+              centerY: headCenterY / canvas.height,
+              radius: headRadius / Math.max(canvas.width, canvas.height),
+              confidence: face.probability ? face.probability[0] : 0.9
+            });
+          });
+
+          // Process COCO-SSD person detections (only if not already detected by BlazeFace)
+          validPersons.forEach((detection) => {
+            const [x, y, width, height] = detection.bbox;
+
+            // Convert to canvas coordinates
+            const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
+            const canvasY = offsetY + (y / video.videoHeight) * drawHeight;
+            const canvasWidth = (width / video.videoWidth) * drawWidth;
+            const canvasHeight = (height / video.videoHeight) * drawHeight;
+
+            // Estimate head position: top 18% of person bbox
+            const headHeight = canvasHeight * 0.18;
             const headCenterX = canvasX + canvasWidth / 2;
             const headCenterY = canvasY + headHeight / 2;
 
-            // Head radius: smaller, tighter fit to avoid background (30% of width or 12% of height)
+            // Check if this region already processed
+            const regionKey = `${Math.round(headCenterX)},${Math.round(headCenterY)}`;
+            if (processedRegions.has(regionKey)) return;
+
             const headRadius = Math.min(canvasWidth * 0.35, canvasHeight * 0.12);
 
-            // Draw circle around head with thinner line
+            // Draw circle with 2pt semi-transparent line
             ctx.beginPath();
             ctx.arc(headCenterX, headCenterY, headRadius, 0, 2 * Math.PI);
-            ctx.strokeStyle = '#00FF00';
-            ctx.lineWidth = 2; // Thinner line
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.6)';
+            ctx.lineWidth = 2;
             ctx.stroke();
 
-            // Draw detection box with thinner line
-            ctx.strokeStyle = 'rgba(0, 255, 0, 0.5)';
-            ctx.lineWidth = 1; // Thinner line
+            // Draw detection box
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
+            ctx.lineWidth = 1;
             ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
 
-            // Store head region (normalized coordinates 0-1)
             headRegions.push({
               centerX: headCenterX / canvas.width,
               centerY: headCenterY / canvas.height,
@@ -215,7 +269,7 @@ const App: React.FC = () => {
           }
 
         } catch (err) {
-          console.error("Object detection error:", err);
+          console.error("Detection error:", err);
         }
       }
 
@@ -307,9 +361,12 @@ const App: React.FC = () => {
         playsInline
         muted
         controls={false}
+        disablePictureInPicture
+        disableRemotePlayback
         className={`absolute top-0 left-0 w-full h-full object-cover transition-opacity duration-700 ${capturedImage ? 'opacity-0' : 'opacity-100'}`}
         style={{
-             filter: 'contrast(1.1) brightness(1.1) saturate(0.8)'
+             filter: 'contrast(1.1) brightness(1.1) saturate(0.8)',
+             pointerEvents: 'none'
         }}
       />
 
