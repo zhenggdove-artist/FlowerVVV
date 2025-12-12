@@ -5,12 +5,20 @@ import { GameState, AnalysisResult, FaceRegion, ColorScheme } from './types.ts';
 import * as blazeface from '@tensorflow-models/blazeface';
 import '@tensorflow/tfjs';
 
-// Generate random color scheme for plants
+// Initial deep green color scheme (for first 10 clicks)
+const initialColorScheme = (): ColorScheme => ({
+  head: { r: 0.0, g: 1.0, b: 0.5 },           // Bright green head
+  vine: { r: 0.05, g: 0.25, b: 0.15 },        // Deep green vine (墨綠色)
+  flower: { r: 1.0, g: 0.1, b: 0.9 },         // Pink flower
+  bug: { r: 0.1, g: 0.5, b: 0.9 }             // Blue bug
+});
+
+// Generate random color scheme for plants (after 10th click)
 const generateRandomColorScheme = (): ColorScheme => {
   const randomColor = () => ({
-    r: Math.random() * 0.3 + 0.1,  // Prevent too dark colors
-    g: Math.random() * 0.8 + 0.2,
-    b: Math.random() * 0.8 + 0.2
+    r: Math.random() * 0.5 + 0.2,  // 0.2-0.7 range
+    g: Math.random() * 0.6 + 0.3,  // 0.3-0.9 range
+    b: Math.random() * 0.6 + 0.3   // 0.3-0.9 range
   });
 
   return {
@@ -47,7 +55,7 @@ const App: React.FC = () => {
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
-  const [currentColorScheme, setCurrentColorScheme] = useState<ColorScheme>(() => generateRandomColorScheme());
+  const [currentColorScheme, setCurrentColorScheme] = useState<ColorScheme>(initialColorScheme());
 
   console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "heads:", detectedHeads.length, "clicks:", viciClickCount);
 
@@ -280,11 +288,14 @@ const App: React.FC = () => {
     const newClickCount = viciClickCount + 1;
     setViciClickCount(newClickCount);
 
-    // Every 10 clicks, generate new random color scheme
-    if (newClickCount % 10 === 0) {
+    // Change color at 11th, 21st, 31st... clicks
+    // (i.e., after every 10 clicks starting from 11)
+    if (newClickCount > 10 && (newClickCount - 1) % 10 === 0) {
       const newColorScheme = generateRandomColorScheme();
       setCurrentColorScheme(newColorScheme);
-      console.log(`Color scheme changed at click ${newClickCount}:`, newColorScheme);
+      console.log(`🎨 Color scheme changed at click ${newClickCount}:`, newColorScheme);
+    } else if (newClickCount <= 10) {
+      console.log(`Click ${newClickCount}/10 - Using initial deep green scheme`);
     }
 
     // IF IDLE: Capture and detect heads
