@@ -362,14 +362,34 @@ const App: React.FC = () => {
         muted
         className={`absolute top-0 left-0 w-full h-full object-cover transition-opacity duration-700 ${capturedImage ? 'opacity-0' : 'opacity-100'}`}
         style={{
-             filter: 'contrast(1.1) brightness(1.1) saturate(0.8)'
+             filter: 'contrast(1.1) brightness(1.1) saturate(0.8)',
+             pointerEvents: 'none'
         }}
-        onLoadedMetadata={(e) => {
-          const video = e.currentTarget;
-          video.removeAttribute('controls');
-          video.controls = false;
+        onPause={(e) => {
+          // Force video to keep playing if paused
+          e.currentTarget.play();
         }}
       />
+
+      {/* BLOCK ALL VIDEO INTERACTIONS - Prevent iOS play/pause overlay */}
+      {!capturedImage && (
+        <div
+          className="absolute top-0 left-0 w-full h-full"
+          style={{
+            zIndex: 5,
+            pointerEvents: 'auto',
+            background: 'transparent'
+          }}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onTouchStart={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        />
+      )}
 
       {/* --- LAYER 1.5: DETECTION OVERLAY --- */}
       {!capturedImage && gameState === GameState.IDLE && (
