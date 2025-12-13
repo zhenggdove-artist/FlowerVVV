@@ -4,6 +4,14 @@ import PlantGrowth from './components/PlantGrowth.tsx';
 import { GameState, AnalysisResult, FaceRegion, ColorScheme } from './types.ts';
 import * as blazeface from '@tensorflow-models/blazeface';
 import '@tensorflow/tfjs';
+import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
+
+// ============================================
+// DUAL ENGINE CONFIGURATION
+// ============================================
+type DetectionEngine = 'BLAZEFACE' | 'MEDIAPIPE';
+const DETECTION_ENGINE: DetectionEngine = 'BLAZEFACE'; // Switch to 'MEDIAPIPE' to test
+// ============================================
 
 // Color schemes pool for random selection (紅橙黃綠藍靛紫)
 const colorSchemes: ColorScheme[] = [
@@ -68,14 +76,20 @@ const getRandomColorScheme = (): ColorScheme => {
 
 const App: React.FC = () => {
   console.log("###################################################");
-  console.log("APP.TSX: BLAZEFACE - AGGRESSIVE DETECTION MODE!");
+  console.log(`APP.TSX: DUAL ENGINE MODE - ACTIVE: ${DETECTION_ENGINE}`);
   console.log("###################################################");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-  const faceDetectorRef = useRef<blazeface.BlazeFaceModel | null>(null);
+
+  // Dual engine refs
+  const blazefaceDetectorRef = useRef<blazeface.BlazeFaceModel | null>(null);
+  const mediapipeDetectorRef = useRef<FaceDetector | null>(null);
   const detectionIntervalRef = useRef<number | null>(null);
+
+  // MediaPipe specific
+  const videoTimestampRef = useRef<number>(0);
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -120,31 +134,75 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Initialize BlazeFace with AGGRESSIVE settings for maximum detection
+  // Initialize Detection Engine (Dual Engine System)
   useEffect(() => {
     let cancelled = false;
 
+    const initBlazeFace = async () => {
+      console.log("🔵 Initializing BlazeFace with AGGRESSIVE settings...");
+      setStatusText("LOADING BLAZEFACE...");
+
+      const blazeModel = await blazeface.load({
+        maxFaces: 100,
+        iouThreshold: 0.1,
+        scoreThreshold: 0.3
+      });
+
+      if (cancelled) return;
+
+      blazefaceDetectorRef.current = blazeModel;
+      console.log("✅ BlazeFace loaded successfully!");
+      return true;
+    };
+
+    const initMediaPipe = async () => {
+      console.log("🟣 Initializing MediaPipe FaceDetector...");
+      setStatusText("LOADING MEDIAPIPE...");
+
+      console.log("📦 Loading MediaPipe Vision wasm files...");
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+      );
+      console.log("✅ Vision wasm loaded");
+
+      if (cancelled) return false;
+
+      console.log("🔧 Creating FaceDetector with config...");
+      const detector = await FaceDetector.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+          delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        minDetectionConfidence: 0.3,
+        minSuppressionThreshold: 0.3
+      });
+      console.log("✅ FaceDetector created");
+
+      if (cancelled) return false;
+
+      mediapipeDetectorRef.current = detector;
+      console.log("✅ MediaPipe loaded successfully!");
+      return true;
+    };
+
     const initDetector = async () => {
       try {
-        console.log("Loading BlazeFace with AGGRESSIVE settings...");
-        setStatusText("LOADING DETECTOR...");
-
-        // AGGRESSIVE BlazeFace configuration for maximum detection
-        const blazeModel = await blazeface.load({
-          maxFaces: 100,          // Maximum possible faces
-          iouThreshold: 0.1,      // Very low = detect more overlapping faces
-          scoreThreshold: 0.3     // Very low = detect more faces (even uncertain ones)
-        });
+        if (DETECTION_ENGINE === 'BLAZEFACE') {
+          await initBlazeFace();
+        } else {
+          await initMediaPipe();
+        }
 
         if (cancelled) return;
 
-        faceDetectorRef.current = blazeModel;
         setIsDetectorReady(true);
         setStatusText("READY - Point camera at faces");
-        console.log("BlazeFace loaded with AGGRESSIVE settings!");
+        console.log(`✅ ${DETECTION_ENGINE} is ready!`);
       } catch (err) {
-        console.error("Failed to initialize BlazeFace:", err);
-        setStatusText("DETECTOR ERROR");
+        console.error(`❌ Failed to initialize ${DETECTION_ENGINE}:`, err);
+        console.error("Error details:", err);
+        setStatusText(`${DETECTION_ENGINE} ERROR`);
         setGameState(GameState.ERROR);
       }
     };
@@ -203,17 +261,20 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!isDetectorReady || !faceDetectorRef.current) return;
+    if (!isDetectorReady) return;
     if (!videoRef.current || !overlayCanvasRef.current) return;
 
-    console.log("Starting FAST face detection (200ms interval)...");
+    // Check if the appropriate detector is ready
+    if (DETECTION_ENGINE === 'BLAZEFACE' && !blazefaceDetectorRef.current) return;
+    if (DETECTION_ENGINE === 'MEDIAPIPE' && !mediapipeDetectorRef.current) return;
+
+    console.log(`Starting face detection with ${DETECTION_ENGINE} (200ms interval)...`);
 
     const detectFaces = async () => {
       const video = videoRef.current;
       const canvas = overlayCanvasRef.current;
-      const faceDetector = faceDetectorRef.current;
 
-      if (!video || !canvas || !faceDetector || video.videoWidth === 0) {
+      if (!video || !canvas || video.videoWidth === 0) {
         return;
       }
 
@@ -225,15 +286,70 @@ const App: React.FC = () => {
 
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        detectionIntervalRef.current = requestAnimationFrame(detectObjects);
         return;
       }
 
       try {
-        // Run BlazeFace detection
-        const faceDetections = await faceDetector.estimateFaces(video, false);
+        // ============================================
+        // DUAL ENGINE DETECTION
+        // ============================================
+        let faceDetections: any[] = [];
 
-        console.log(`🔍 BlazeFace detected ${faceDetections.length} faces in current frame`);
+        if (DETECTION_ENGINE === 'BLAZEFACE') {
+          // --- BlazeFace Detection ---
+          const detector = blazefaceDetectorRef.current;
+          if (!detector) return;
+
+          console.log('🔵 Using BlazeFace detection...');
+          faceDetections = await detector.estimateFaces(video, false);
+          console.log(`✅ BlazeFace detected ${faceDetections.length} faces`);
+
+        } else {
+          // --- MediaPipe Detection ---
+          const detector = mediapipeDetectorRef.current;
+          if (!detector) return;
+
+          console.log('🟣 Using MediaPipe detection...');
+          console.log(`📹 Video state: readyState=${video.readyState}, size=${video.videoWidth}x${video.videoHeight}`);
+
+          // CRITICAL: Use video.currentTime (in seconds) * 1000 for milliseconds
+          const timestamp = video.currentTime * 1000;
+          console.log(`⏱️ Video timestamp: ${timestamp.toFixed(2)}ms (currentTime=${video.currentTime.toFixed(3)}s)`);
+
+          // Call MediaPipe detectForVideo
+          const result = detector.detectForVideo(video, timestamp);
+          console.log('📦 MediaPipe raw result:', result);
+          console.log(`📦 Result.detections:`, result.detections);
+
+          if (!result.detections || result.detections.length === 0) {
+            console.log('⚠️ MediaPipe returned 0 detections');
+          }
+
+          // Convert MediaPipe format to BlazeFace-like format
+          faceDetections = (result.detections || []).map((detection: any, index: number) => {
+            // MediaPipe returns boundingBox: { originX, originY, width, height }
+            const bbox = detection.boundingBox;
+            console.log(`  MediaPipe detection ${index}:`, bbox, 'categories:', detection.categories);
+
+            // Convert to BlazeFace format: { topLeft: [x, y], bottomRight: [x2, y2], probability: [score] }
+            const converted = {
+              topLeft: [bbox.originX, bbox.originY],
+              bottomRight: [bbox.originX + bbox.width, bbox.originY + bbox.height],
+              probability: detection.categories && detection.categories.length > 0
+                ? [detection.categories[0].score]
+                : [0.5]
+            };
+            console.log(`  ✅ Converted to BlazeFace format:`, converted);
+            return converted;
+          });
+
+          console.log(`✅ MediaPipe detected ${faceDetections.length} faces (after conversion)`);
+        }
+
+        // ============================================
+        // UNIFIED PROCESSING (Both engines)
+        // ============================================
+        console.log(`🔍 ${DETECTION_ENGINE} detected ${faceDetections.length} faces in current frame`);
 
         // Clear previous drawings
         ctx.clearRect(0, 0, canvas.width, canvas.height);
