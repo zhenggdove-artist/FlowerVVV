@@ -17,8 +17,11 @@ const run = async () => {
   }
 
   console.log(`sync-dist: dist found at ${distDir}`);
-  const targetAssets = path.join(rootDir, 'assets');
-  await fs.promises.rm(targetAssets, { recursive: true, force: true });
+  // IMPORTANT (GitHub Pages caching):
+  // Do NOT delete the entire assets folder on each deploy. Users may have cached an older
+  // docs/index.html that still references a previous hashed asset file; deleting it causes
+  // a black screen until cache expires.
+  // We overwrite/merge new build assets and keep older ones for backward compatibility.
 
   const distEntries = await fs.promises.readdir(distDir);
   console.log(`sync-dist: copying ${distEntries.length} items...`);

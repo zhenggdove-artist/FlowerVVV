@@ -413,6 +413,9 @@ const App: React.FC = () => {
 
   // Handle Resize
   useEffect(() => {
+    const boot = document.getElementById('boot-screen');
+    if (boot) boot.remove();
+
     const handleResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
