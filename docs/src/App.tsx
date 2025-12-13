@@ -3,28 +3,20 @@ import DreamOverlay from './components/DreamOverlay.tsx';
 import PlantGrowth from './components/PlantGrowth.tsx';
 import { GameState, AnalysisResult, FaceRegion, ColorScheme } from './types.ts';
 import * as blazeface from '@tensorflow-models/blazeface';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import '@tensorflow/tfjs';
 import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
 
 // ============================================
 // DUAL ENGINE CONFIGURATION
 // ============================================
-type DetectionEngine = 'BLAZEFACE' | 'MEDIAPIPE';
-const DETECTION_ENGINE: DetectionEngine = 'MEDIAPIPE'; // Switch to 'MEDIAPIPE' to test
-const MEDIAPIPE_MODEL_FULL_RANGE = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_full_range/float16/1/blaze_face_full_range.tflite";
-const MEDIAPIPE_MODEL_SHORT_RANGE = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
-// ============================================
+type DetectionEngine = 'BLAZEFACE' | 'MEDIAPIPE' | 'HYBRID';
+const DETECTION_ENGINE: DetectionEngine = 'HYBRID';
 
-type StatueMaterialAnalysis = {
-  isStatue: boolean;
-  reason: string;
-  saturation: number;
-  skinTone: number;
-  grayRatio: number;
-  texture: number;
-  signature: Uint8Array;
-  hairDarkRatio?: number;
-};
+const INTERACTION_CONFIDENCE_MIN = 0.4; // 40%
+const BOX_PERSIST_MS = 700;
+const AUTO_CAPTURE_MS = 700;
+// ============================================
 
 // Color schemes pool for random selection (紅橙黃綠藍靛紫)
 const colorSchemes: ColorScheme[] = [
@@ -87,53 +79,103 @@ const getRandomColorScheme = (): ColorScheme => {
   return colorSchemes[randomIndex];
 };
 
-// Expand bbox slightly to capture material context (hairline, shoulders, background)
-const padBoundingBox = (
-  bbox: { x: number; y: number; width: number; height: number },
-  video: HTMLVideoElement
-) => {
-  const padX = Math.min(bbox.width * 0.12, 18);
-  const padY = Math.min(bbox.height * 0.12, 18);
-  const x = Math.max(0, bbox.x - padX);
-  const y = Math.max(0, bbox.y - padY);
-  const x2 = Math.min(video.videoWidth, bbox.x + bbox.width + padX);
-  const y2 = Math.min(video.videoHeight, bbox.y + bbox.height + padY);
+// ============================================
+// HUMAN DETECTION (Top-of-head hair check)
+// ============================================
+
+type HairCheckResult = { isHuman: boolean; reason: string; hairCoverage: number; edgeRatio: number };
+
+/**
+ * If the TOP of the head is largely covered by dark (black/brown) hair, treat as HUMAN.
+ * Otherwise we treat detected face/head as STATUE.
+ */
+const analyzeHairOnTop = (
+  video: HTMLVideoElement,
+  bbox: { x: number; y: number; width: number; height: number }
+): HairCheckResult => {
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+  // Analyze a central band slightly ABOVE the bbox to catch hair even when the detector returns only the face.
+  const roiX = clamp(Math.floor(bbox.x + bbox.width * 0.15), 0, video.videoWidth - 1);
+  const roiW = clamp(Math.floor(bbox.width * 0.7), 1, video.videoWidth - roiX);
+  const roiY = clamp(Math.floor(bbox.y - bbox.height * 0.35), 0, video.videoHeight - 1);
+  const roiH = clamp(Math.floor(bbox.height * 0.6), 1, video.videoHeight - roiY);
+
+  const SAMPLE = 56;
+  const canvas = document.createElement('canvas');
+  canvas.width = SAMPLE;
+  canvas.height = SAMPLE;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return { isHuman: false, reason: 'Canvas error', hairCoverage: 0, edgeRatio: 0 };
+
+  ctx.drawImage(video, roiX, roiY, roiW, roiH, 0, 0, SAMPLE, SAMPLE);
+  const imageData = ctx.getImageData(0, 0, SAMPLE, SAMPLE);
+  const pixels = imageData.data;
+
+  const lumas = new Float32Array(SAMPLE * SAMPLE);
+  let hairPixels = 0;
+  let totalPixels = 0;
+
+  for (let i = 0, p = 0; i < pixels.length; i += 4, p++) {
+    const r = pixels[i];
+    const g = pixels[i + 1];
+    const b = pixels[i + 2];
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+    const v = max / 255;
+    const s = max === 0 ? 0 : delta / max;
+
+    const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    lumas[p] = luma;
+
+    // Hue (0..360)
+    let h = 0;
+    if (delta !== 0) {
+      if (max === r) h = ((g - b) / delta) % 6;
+      else if (max === g) h = (b - r) / delta + 2;
+      else h = (r - g) / delta + 4;
+      h *= 60;
+      if (h < 0) h += 360;
+    }
+
+    // Heuristics: hair tends to be dark; brown hair is warm hue; black hair is very low V.
+    const isBrown = h >= 10 && h <= 55 && s >= 0.12 && v <= 0.75;
+    const isVeryDark = v <= 0.25 && luma <= 0.28;
+    const isDarkAndSaturated = luma <= 0.42 && s >= 0.18;
+
+    const isHairPixel = isVeryDark || (isBrown && luma <= 0.55) || isDarkAndSaturated;
+    if (isHairPixel) hairPixels++;
+    totalPixels++;
+  }
+
+  // Texture/edge check to reduce flat-dark false positives
+  let edgeCount = 0;
+  const EDGE_THRESHOLD = 0.12;
+  for (let y = 0; y < SAMPLE - 1; y++) {
+    for (let x = 0; x < SAMPLE - 1; x++) {
+      const idx = y * SAMPLE + x;
+      const d = Math.abs(lumas[idx] - lumas[idx + 1]) + Math.abs(lumas[idx] - lumas[idx + SAMPLE]);
+      if (d > EDGE_THRESHOLD) edgeCount++;
+    }
+  }
+
+  const hairCoverage = totalPixels > 0 ? hairPixels / totalPixels : 0;
+  const edgeRatio = edgeCount / Math.max(1, (SAMPLE - 1) * (SAMPLE - 1));
+
+  const HAIR_COVERAGE_MIN = 0.32;
+  const EDGE_RATIO_MIN = 0.05;
+  const isHuman = hairCoverage >= HAIR_COVERAGE_MIN && edgeRatio >= EDGE_RATIO_MIN;
+
   return {
-    x,
-    y,
-    width: Math.max(1, x2 - x),
-    height: Math.max(1, y2 - y)
+    isHuman,
+    hairCoverage,
+    edgeRatio,
+    reason: isHuman
+      ? `Hair on top detected (coverage ${(hairCoverage * 100).toFixed(0)}%, texture ${(edgeRatio * 100).toFixed(0)}%)`
+      : `No strong top-hair (coverage ${(hairCoverage * 100).toFixed(0)}%, texture ${(edgeRatio * 100).toFixed(0)}%)`
   };
-};
-
-const buildRegionSignature = (sourceCanvas: HTMLCanvasElement): Uint8Array => {
-  const signatureCanvas = document.createElement('canvas');
-  const signatureSize = 8;
-  signatureCanvas.width = signatureSize;
-  signatureCanvas.height = signatureSize;
-  const sigCtx = signatureCanvas.getContext('2d');
-  if (!sigCtx) return new Uint8Array();
-  sigCtx.drawImage(sourceCanvas, 0, 0, signatureSize, signatureSize);
-  const sigData = sigCtx.getImageData(0, 0, signatureSize, signatureSize).data;
-  const signature = new Uint8Array(signatureSize * signatureSize);
-  for (let i = 0; i < signature.length; i++) {
-    const idx = i * 4;
-    const r = sigData[idx];
-    const g = sigData[idx + 1];
-    const b = sigData[idx + 2];
-    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    signature[i] = Math.round(luma);
-  }
-  return signature;
-};
-
-const computeMotionScore = (prev: Uint8Array | undefined, current: Uint8Array) => {
-  if (!prev || prev.length !== current.length) return 0;
-  let diff = 0;
-  for (let i = 0; i < current.length; i++) {
-    diff += Math.abs(current[i] - prev[i]);
-  }
-  return diff / (current.length * 255);
 };
 
 // ============================================
@@ -147,132 +189,125 @@ const computeMotionScore = (prev: Uint8Array | undefined, current: Uint8Array) =
 const analyzeStatueMaterial = (
   video: HTMLVideoElement,
   bbox: { x: number; y: number; width: number; height: number }
-): StatueMaterialAnalysis => {
+): { isStatue: boolean; reason: string; saturation: number; skinTone: number } => {
+  // Create temporary canvas to extract region
   const tempCanvas = document.createElement('canvas');
-  const width = Math.max(4, Math.round(bbox.width));
-  const height = Math.max(4, Math.round(bbox.height));
-  tempCanvas.width = width;
-  tempCanvas.height = height;
+  tempCanvas.width = bbox.width;
+  tempCanvas.height = bbox.height;
   const ctx = tempCanvas.getContext('2d', { willReadFrequently: true });
 
   if (!ctx) {
-    return { isStatue: false, reason: 'Canvas error', saturation: 0, skinTone: 0, grayRatio: 0, texture: 0, signature: new Uint8Array() };
+    return { isStatue: false, reason: 'Canvas error', saturation: 0, skinTone: 0 };
   }
 
+  // Draw the detected region
   ctx.drawImage(
     video,
     bbox.x, bbox.y, bbox.width, bbox.height,
-    0, 0, width, height
+    0, 0, bbox.width, bbox.height
   );
 
-  const imageData = ctx.getImageData(0, 0, width, height);
+  const imageData = ctx.getImageData(0, 0, bbox.width, bbox.height);
   const pixels = imageData.data;
 
   let totalSaturation = 0;
   let skinTonePixels = 0;
-  let totalSamples = 0;
+  let totalPixels = 0;
   let grayPixels = 0;
-  let lumaSum = 0;
-  let lumaSqSum = 0;
-  let edgeSum = 0;
-  let hairDarkCount = 0;
-  let hairSamples = 0;
 
-  const stride = Math.max(1, Math.floor(Math.min(width, height) / 24));
-  const hairRegionY = Math.max(1, Math.floor(height * 0.45)); // top 45% area for hair check
+  // Sample pixels (every 4th pixel for performance)
+  for (let i = 0; i < pixels.length; i += 16) {  // RGBA format, skip 4 pixels
+    const r = pixels[i];
+    const g = pixels[i + 1];
+    const b = pixels[i + 2];
 
-  for (let y = 0; y < height; y += stride) {
-    for (let x = 0; x < width; x += stride) {
-      const idx = (y * width + x) * 4;
-      const r = pixels[idx];
-      const g = pixels[idx + 1];
-      const b = pixels[idx + 2];
+    // Convert RGB to HSV to get saturation
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
 
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const delta = max - min;
-      const saturation = max === 0 ? 0 : (delta / max) * 100;
-      totalSaturation += saturation;
+    // Saturation in HSV (0-100%)
+    const saturation = max === 0 ? 0 : (delta / max) * 100;
+    totalSaturation += saturation;
 
-      const isSkinRGB = (
-        r > 95 && g > 40 && b > 20 &&
-        r > g && g > b &&
-        Math.abs(r - g) > 15
-      );
-      const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
-      const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
-      const isSkinYCbCr = cb >= 77 && cb <= 127 && cr >= 133 && cr <= 173;
-      if (isSkinRGB || isSkinYCbCr) {
-        skinTonePixels++;
-      }
+    // Check for human skin tone (RGB based detection)
+    // Human skin: R > G > B, with specific ratios
+    const isLikelySkin = (
+      r > 95 && g > 40 && b > 20 &&
+      r > g && g > b &&
+      Math.abs(r - g) > 15 &&
+      (r - g) > 15
+    );
 
-      const colorDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
-      if (colorDiff < 18) {
-        grayPixels++;
-      }
-
-      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-      lumaSum += luma;
-      lumaSqSum += luma * luma;
-
-      // Hair heuristic: dense dark band near top of head = likely real human hair
-      if (y <= hairRegionY) {
-        if (luma < 120) {
-          hairDarkCount++;
-        }
-        hairSamples++;
-      }
-
-      if (x >= stride) {
-        const leftIdx = (y * width + (x - stride)) * 4;
-        const leftLuma = 0.299 * pixels[leftIdx] + 0.587 * pixels[leftIdx + 1] + 0.114 * pixels[leftIdx + 2];
-        edgeSum += Math.abs(luma - leftLuma);
-      }
-      if (y >= stride) {
-        const topIdx = ((y - stride) * width + x) * 4;
-        const topLuma = 0.299 * pixels[topIdx] + 0.587 * pixels[topIdx + 1] + 0.114 * pixels[topIdx + 2];
-        edgeSum += Math.abs(luma - topLuma);
-      }
-
-      totalSamples++;
+    if (isLikelySkin) {
+      skinTonePixels++;
     }
+
+    // Check for grayscale/metallic (R ≈ G ≈ B)
+    const colorDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
+    if (colorDiff < 15) {
+      grayPixels++;
+    }
+
+    totalPixels++;
   }
 
-  const avgSaturation = totalSaturation / Math.max(1, totalSamples);
-  const skinToneRatio = skinTonePixels / Math.max(1, totalSamples);
-  const grayRatio = grayPixels / Math.max(1, totalSamples);
-  const avgLuma = lumaSum / Math.max(1, totalSamples);
-  const lumaVariance = lumaSqSum / Math.max(1, totalSamples) - avgLuma * avgLuma;
-  const lumaStd = Math.sqrt(Math.max(0, lumaVariance));
-  const edgeDensity = edgeSum / (Math.max(1, totalSamples) * 255 * 2);
-  const hairDarkRatio = hairSamples > 0 ? hairDarkCount / hairSamples : 0;
+  const avgSaturation = totalSaturation / totalPixels;
+  const skinToneRatio = skinTonePixels / totalPixels;
+  const grayRatio = grayPixels / totalPixels;
 
-  console.log(`    dYZ" Material Analysis: sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%, tex=${(edgeDensity * 100).toFixed(1)}%, lumaStd=${lumaStd.toFixed(1)}, hairDark=${(hairDarkRatio * 100).toFixed(1)}%`);
+  console.log(`    🎨 Material Analysis: saturation=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%`);
 
-  // Hair-only heuristic: if large dark band on top -> human, otherwise treat as statue
-  const hairLooksHuman = hairDarkRatio > 0.1; // sensitive
+  // STATUE CRITERIA:
+  // 1. Low saturation (<25%) - statues are usually monochrome
+  // 2. Low skin tone ratio (<15%) - not human skin color
+  // 3. High gray ratio (>40%) - metallic/stone materials
 
-  let isStatue = true;
-  let reason = 'No human hair signature detected';
-
-  if (hairLooksHuman) {
-    isStatue = false;
-    reason = `Human hair detected (dark top ${(hairDarkRatio * 100).toFixed(1)}%)`;
+  if (avgSaturation < 90 && skinToneRatio < 0.9) {
+    return {
+      isStatue: true,
+      reason: `Low saturation (${avgSaturation.toFixed(1)}%) + No skin tone`,
+      saturation: avgSaturation,
+      skinTone: skinToneRatio * 100
+    };
   }
 
-  const signature = buildRegionSignature(tempCanvas);
+  if (grayRatio > 0.4 && skinToneRatio < 0.2) {
+    return {
+      isStatue: true,
+      reason: `Grayscale material (${(grayRatio * 100).toFixed(1)}%)`,
+      saturation: avgSaturation,
+      skinTone: skinToneRatio * 100
+    };
+  }
+
+  if (skinToneRatio > 0.3) {
+    return {
+      isStatue: false,
+      reason: `Human skin detected (${(skinToneRatio * 100).toFixed(1)}%)`,
+      saturation: avgSaturation,
+      skinTone: skinToneRatio * 100
+    };
+  }
+
+  // Edge case: medium saturation but no skin = possible colored statue
+  if (avgSaturation < 99 && skinToneRatio < 0.001) {
+    return {
+      isStatue: true,
+      reason: 'Colored statue (low saturation, no skin)',
+      saturation: avgSaturation,
+      skinTone: skinToneRatio * 100
+    };
+  }
 
   return {
-    isStatue,
-    reason,
+    isStatue: false,
+    reason: `Too colorful (sat=${avgSaturation.toFixed(1)}%)`,
     saturation: avgSaturation,
-    skinTone: skinToneRatio * 100,
-    grayRatio: grayRatio * 100,
-    texture: edgeDensity * 100,
-    signature,
-    hairDarkRatio: hairDarkRatio * 100
+    skinTone: skinToneRatio * 100
   };
 };
+
 const App: React.FC = () => {
   console.log("###################################################");
   console.log(`APP.TSX: DUAL ENGINE MODE - ACTIVE: ${DETECTION_ENGINE}`);
@@ -283,10 +318,15 @@ const App: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Dual engine refs
-  const blazefaceDetectorRef = useRef<blazeface.BlazeFaceModel | null>(null);
-  const mediapipeDetectorRef = useRef<FaceDetector | null>(null);
-  const detectionIntervalRef = useRef<number | null>(null);
+    // Dual engine refs
+    const blazefaceDetectorRef = useRef<blazeface.BlazeFaceModel | null>(null);
+    const mediapipeDetectorRef = useRef<FaceDetector | null>(null);
+    const cocoDetectorRef = useRef<cocoSsd.ObjectDetection | null>(null);
+    const detectionIntervalRef = useRef<number | null>(null);
+
+    // COCO-SSD throttling + cached head regions (derived from "person" boxes)
+    const lastPersonDetectAtRef = useRef<number>(0);
+    const cachedPersonHeadDetectionsRef = useRef<any[]>([]);
 
   // MediaPipe specific
   const videoTimestampRef = useRef<number>(0);
@@ -297,28 +337,29 @@ const App: React.FC = () => {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [detectedHeads, setDetectedHeads] = useState<FaceRegion[]>([]);
+  const detectedHeadsRef = useRef<FaceRegion[]>([]);
   const [isDetectorReady, setIsDetectorReady] = useState<boolean>(false);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
 
-const [growthTrigger, setGrowthTrigger] = useState<number>(0);
-const detectionStableCountRef = useRef<number>(0);
-const autoCaptureFiredRef = useRef<boolean>(false);
-const lastDetectedHeadsRef = useRef<FaceRegion[]>([]);
-const detectedRegionsHistoryRef = useRef<Array<{
-  region: {
-    canvasX: number;
-    canvasY: number;
-    canvasWidth: number;
-    canvasHeight: number;
-    headCenterX: number;
-    headCenterY: number;
-    headRadius: number;
-    confidence: number;
-    index: number;
-  };
-  timestamp: number;
-}>>([]);
-const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; timestamp: number }>>(new Map());
+  const [growthTrigger, setGrowthTrigger] = useState<number>(0);
+  const detectionStableCountRef = useRef<number>(0);
+  const autoCaptureFiredRef = useRef<boolean>(false);
+
+  // For detection box persistence (0.7s minimum display per box)
+  const detectedRegionsHistoryRef = useRef<Array<{
+    region: {
+      canvasX: number;
+      canvasY: number;
+      canvasWidth: number;
+      canvasHeight: number;
+      headCenterX: number;
+      headCenterY: number;
+      headRadius: number;
+      confidence: number;
+      index: number;
+    };
+    timestamp: number;
+  }>>([]);
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
@@ -342,11 +383,11 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
       console.log("🔵 Initializing BlazeFace with AGGRESSIVE settings...");
       setStatusText("LOADING BLAZEFACE...");
 
-      const blazeModel = await blazeface.load({
-        maxFaces: 150,
-        iouThreshold: 0.2,
-        scoreThreshold: 0.18
-      });
+        const blazeModel = await blazeface.load({
+          maxFaces: 100,
+          iouThreshold: 0.1,
+          scoreThreshold: 0.25
+        });
 
       if (cancelled) return;
 
@@ -367,36 +408,21 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
 
       if (cancelled) return false;
 
-      console.log("🔧 Creating FaceDetector with WIDE-RANGE config (prefers small/far heads, falls back if needed)...");
-      console.log("   - Model: blaze_face_full_range (captures small distant heads)");
-      console.log("   - minDetectionConfidence: 0.28 (very sensitive; rely on hair/material filters to reject humans)");
-      console.log("   - minSuppressionThreshold: 0.15 (looser NMS to keep weak boxes)");
+      console.log("🔧 Creating FaceDetector with OPTIMIZED config...");
+      console.log("   - Model: blaze_face_full_range (more robust)");
+      console.log("   - minDetectionConfidence: 0.35 (balanced)");
+      console.log("   - minSuppressionThreshold: 0.3 (less strict NMS)");
 
-      let detector: FaceDetector | null = null;
-      try {
-        detector = await FaceDetector.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: MEDIAPIPE_MODEL_FULL_RANGE,
-            delegate: "GPU"
-          },
-          runningMode: "VIDEO",
-          minDetectionConfidence: 0.28,
-          minSuppressionThreshold: 0.15
-        });
-        console.log("✅ FaceDetector created with FULL-RANGE model");
-      } catch (err) {
-        console.warn("⚠️ Full-range model failed, falling back to short-range:", err);
-        detector = await FaceDetector.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: MEDIAPIPE_MODEL_SHORT_RANGE,
-            delegate: "GPU"
-          },
-          runningMode: "VIDEO",
-          minDetectionConfidence: 0.32,
-          minSuppressionThreshold: 0.2
-        });
-        console.log("✅ FaceDetector created with SHORT-RANGE fallback");
-      }
+      const detector = await FaceDetector.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_full_range/float16/1/blaze_face_full_range.tflite",
+          delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        minDetectionConfidence: 0.35,
+        minSuppressionThreshold: 0.3
+      });
+      console.log("✅ FaceDetector created with HIGH accuracy settings");
 
       if (cancelled) return false;
 
@@ -405,18 +431,36 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
       return true;
     };
 
+    const initCoco = async () => {
+      console.log("🟠 Initializing COCO-SSD person detector...");
+      setStatusText("LOADING PERSON DETECTOR...");
+
+      const model = await cocoSsd.load({ base: 'mobilenet_v2' });
+
+      if (cancelled) return false;
+
+      cocoDetectorRef.current = model;
+      console.log("✅ COCO-SSD loaded successfully!");
+      return true;
+    };
+
     const initDetector = async () => {
       try {
-        if (DETECTION_ENGINE === 'BLAZEFACE') {
+        if (DETECTION_ENGINE === 'HYBRID') {
+          await initMediaPipe();
+          await initBlazeFace();
+        } else if (DETECTION_ENGINE === 'BLAZEFACE') {
           await initBlazeFace();
         } else {
           await initMediaPipe();
         }
 
+        await initCoco();
+
         if (cancelled) return;
 
         setIsDetectorReady(true);
-        setStatusText("READY - Point camera at STATUES");
+        setStatusText("READY - Point camera at TARGET");
         console.log(`✅ ${DETECTION_ENGINE} is ready for STATUE detection!`);
       } catch (err) {
         console.error(`❌ Failed to initialize ${DETECTION_ENGINE}:`, err);
@@ -484,8 +528,11 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
     if (!videoRef.current || !overlayCanvasRef.current) return;
 
     // Check if the appropriate detector is ready
-    if (DETECTION_ENGINE === 'BLAZEFACE' && !blazefaceDetectorRef.current) return;
-    if (DETECTION_ENGINE === 'MEDIAPIPE' && !mediapipeDetectorRef.current) return;
+    const hasBlazeFace = !!blazefaceDetectorRef.current;
+    const hasMediaPipe = !!mediapipeDetectorRef.current;
+    if (DETECTION_ENGINE === 'BLAZEFACE' && !hasBlazeFace) return;
+    if (DETECTION_ENGINE === 'MEDIAPIPE' && !hasMediaPipe) return;
+    if (DETECTION_ENGINE === 'HYBRID' && !hasBlazeFace && !hasMediaPipe) return;
 
     console.log(`Starting face detection with ${DETECTION_ENGINE} (200ms interval)...`);
 
@@ -513,6 +560,22 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
         // DUAL ENGINE DETECTION
         // ============================================
         let faceDetections: any[] = [];
+
+        // HYBRID: run BlazeFace + MediaPipe and combine results
+        if (DETECTION_ENGINE === 'HYBRID') {
+          const blaze = blazefaceDetectorRef.current;
+          if (blaze) {
+            try {
+              const blazeFaces = await blaze.estimateFaces(video, false);
+              faceDetections = [
+                ...faceDetections,
+                ...blazeFaces.map((f: any) => ({ ...f, _source: 'BLAZEFACE_FACE' }))
+              ];
+            } catch (err) {
+              console.warn("BlazeFace detect() failed:", err);
+            }
+          }
+        }
 
         if (DETECTION_ENGINE === 'BLAZEFACE') {
           // --- BlazeFace Detection ---
@@ -545,7 +608,7 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
           }
 
           // Convert MediaPipe format to BlazeFace-like format
-          faceDetections = (result.detections || []).map((detection: any, index: number) => {
+          faceDetections = [...faceDetections, ...(result.detections || []).map((detection: any, index: number) => {
             // MediaPipe returns boundingBox: { originX, originY, width, height }
             const bbox = detection.boundingBox;
             console.log(`  MediaPipe detection ${index}:`, bbox, 'categories:', detection.categories);
@@ -556,16 +619,64 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
               bottomRight: [bbox.originX + bbox.width, bbox.originY + bbox.height],
               probability: detection.categories && detection.categories.length > 0
                 ? [detection.categories[0].score]
-                : [0.5]
+                : [0.5],
+              _source: 'MEDIAPIPE_FACE'
             };
             console.log(`  ✅ Converted to BlazeFace format:`, converted);
             return converted;
-          });
+          })];
 
           console.log(`✅ MediaPipe detected ${faceDetections.length} faces (after conversion)`);
         }
 
         // ============================================
+        // COCO-SSD PERSON DETECTION (HEAD FALLBACK)
+        const now = Date.now();
+        const coco = cocoDetectorRef.current;
+        const PERSON_REFRESH_MS = 400;
+        const PERSON_MIN_SCORE = 0.25;
+
+        if (coco && now - lastPersonDetectAtRef.current > PERSON_REFRESH_MS) {
+          try {
+            const detections = await coco.detect(video, 20, PERSON_MIN_SCORE);
+            const personHeads = (detections || [])
+              .filter((d: cocoSsd.DetectedObject) => d.class === 'person' && d.score >= PERSON_MIN_SCORE)
+              .map((d: cocoSsd.DetectedObject) => {
+                const [px, py, pw, ph] = d.bbox;
+                const aspect = ph / Math.max(1, pw);
+
+                const headHeightRatio = aspect < 1.2 ? 0.55 : 0.35;
+                const headWidthRatio = aspect < 1.2 ? 0.8 : 0.5;
+
+                const headW = pw * headWidthRatio;
+                const headH = ph * headHeightRatio;
+                const headX = px + (pw - headW) / 2;
+                const headY = py;
+
+                const clampedX = Math.max(0, Math.min(video.videoWidth - 1, headX));
+                const clampedY = Math.max(0, Math.min(video.videoHeight - 1, headY));
+                const clampedW = Math.max(1, Math.min(video.videoWidth - clampedX, headW));
+                const clampedH = Math.max(1, Math.min(video.videoHeight - clampedY, headH));
+
+                return {
+                  topLeft: [clampedX, clampedY],
+                  bottomRight: [clampedX + clampedW, clampedY + clampedH],
+                  probability: [d.score],
+                  _source: 'COCO_PERSON'
+                };
+              });
+
+            cachedPersonHeadDetectionsRef.current = personHeads;
+            lastPersonDetectAtRef.current = now;
+          } catch (err) {
+            console.warn("COCO-SSD detect() failed:", err);
+          }
+        }
+
+        if (cachedPersonHeadDetectionsRef.current.length > 0) {
+          faceDetections = [...faceDetections, ...cachedPersonHeadDetectionsRef.current];
+        }
+
         // UNIFIED PROCESSING (Both engines)
         // ============================================
         console.log(`🔍 ${DETECTION_ENGINE} detected ${faceDetections.length} faces in current frame`);
@@ -608,37 +719,36 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
           faceDetections.forEach((face: any, index: number) => {
             const [x, y] = face.topLeft;
             const [x2, y2] = face.bottomRight;
-            const width = x2 - x;
-            const height = y2 - y;
-            const confidence = face.probability ? face.probability[0] : 0.9;
+              const width = x2 - x;
+              const height = y2 - y;
+              const confidence = face.probability ? face.probability[0] : 0.9;
+              const source = face._source || 'UNKNOWN';
+              const isPersonHead = source === 'COCO_PERSON';
 
             console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] confidence=${confidence.toFixed(2)}`);
 
             // ============================================
-            // ENHANCED 8-LAYER FILTER SYSTEM (MediaPipe Optimized)
+            // ENHANCED 6-LAYER FILTER SYSTEM (MediaPipe Optimized)
             // ============================================
 
-            // Filter 1: Reject detections that are too large (likely false positives)
-            // Allow large faces (close-up statues)
-            const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * 0.95;
+              // Filter 1: Reject detections that are too large (likely false positives)
+              const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * (isPersonHead ? 0.95 : 0.9);
             if (width > maxFaceSize || height > maxFaceSize) {
               console.log(`  ❌ FILTER 1 FAIL: Face ${index + 1} too large (${width.toFixed(0)}x${height.toFixed(0)} exceeds ${maxFaceSize.toFixed(0)})`);
               return;
             }
 
-            // Filter 2: Reject detections that are too small (noise)
-            // For MediaPipe: minimum 0.6% of video width or 4 pixels (allow distant statues)
-            const minFaceSize = DETECTION_ENGINE === 'MEDIAPIPE'
-              ? Math.max(4, video.videoWidth * 0.006)
-              : Math.max(4, video.videoWidth * 0.005);
+              // Filter 2: Reject detections that are too small (noise)
+              const minFaceSize = isPersonHead
+                ? Math.max(18, video.videoWidth * 0.02)
+                : Math.max(12, video.videoWidth * 0.015);
             if (width < minFaceSize || height < minFaceSize) {
               console.log(`  ❌ FILTER 2 FAIL: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize.toFixed(0)})`);
               return;
             }
 
-            // Filter 3: Reject detections with low confidence
-            // MediaPipe: Match relaxed minDetectionConfidence (0.2), BlazeFace: 0.18
-            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.2 : 0.18;
+              // Filter 3: Reject detections with very low confidence
+              const minConfidence = INTERACTION_CONFIDENCE_MIN;
             if (confidence < minConfidence) {
               console.log(`  ❌ FILTER 3 FAIL: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}%)`);
               return;
@@ -647,7 +757,7 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
             // Filter 4: Aspect ratio check - faces should be roughly square to oval
             // MediaPipe stricter: 1.8:1 max (was 2.5:1)
             const aspectRatio = Math.max(width, height) / Math.min(width, height);
-            const maxAspectRatio = DETECTION_ENGINE === 'MEDIAPIPE' ? 1.8 : 2.5;
+              const maxAspectRatio = isPersonHead ? 3.5 : 2.8;
             if (aspectRatio > maxAspectRatio) {
               console.log(`  ❌ FILTER 4 FAIL: Face ${index + 1} invalid aspect ratio (${aspectRatio.toFixed(2)} > ${maxAspectRatio})`);
               return;
@@ -655,7 +765,7 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
 
             // Filter 5: Position sanity check - reject detections at extreme edges
             // Faces at very edge of frame are often false positives
-            const edgeMargin = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.01 : 0; // 1% margin for MediaPipe
+              const edgeMargin = 0; // allow edges (better recall)
             const minX = video.videoWidth * edgeMargin;
             const maxX = video.videoWidth * (1 - edgeMargin);
             const minY = video.videoHeight * edgeMargin;
@@ -675,7 +785,7 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
             const avgSize = (width + height) / 2;
             const sizeVariance = sizeDiff / avgSize;
 
-            if (sizeVariance > 0.4 && DETECTION_ENGINE === 'MEDIAPIPE') {
+            if (!isPersonHead && sizeVariance > 0.75) {
               console.log(`  ❌ FILTER 6 FAIL: Face ${index + 1} inconsistent dimensions (variance: ${(sizeVariance * 100).toFixed(0)}%)`);
               return;
             }
@@ -683,12 +793,22 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
             console.log(`  ✅ PASSED geometric filters 1-6`);
 
             // ============================================
-            // Filter 7: STATUE MATERIAL DETECTION (CRITICAL)
+            // Filter 7: TOP-HAIR HUMAN REJECTION (CRITICAL)
             // ============================================
             // Analyze the region to determine if it's a statue or human
-            const paddedBox = padBoundingBox({ x, y, width, height }, video);
-            const materialAnalysis = analyzeStatueMaterial(video, paddedBox);
+            const hairAnalysis = analyzeHairOnTop(video, { x, y, width, height });
 
+            console.log(`    Hair check: ${hairAnalysis.isHuman ? 'HUMAN' : 'STATUE'}`);
+            console.log(`    Reason: ${hairAnalysis.reason}`);
+
+            if (hairAnalysis.isHuman) {
+              console.log(`  FILTER 7 FAIL: REJECTED - ${hairAnalysis.reason}`);
+              return;
+            }
+
+            console.log(`  FINAL ACCEPTANCE: Face ${index + 1} treated as STATUE (hair check passed)`);
+
+            /*
             console.log(`    🗿 Statue check: ${materialAnalysis.isStatue ? '✅ IS STATUE' : '❌ IS HUMAN'}`);
             console.log(`    📊 Reason: ${materialAnalysis.reason}`);
 
@@ -697,9 +817,9 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
               return;
             }
 
-            // ============================================
-            // Motion filter disabled to maximize detection retention
-            console.log(`  ✅✅ FINAL ACCEPTANCE: Face ${index + 1} is a STATUE - passed ALL filters`);
+            console.log(`  ✅✅ FINAL ACCEPTANCE: Face ${index + 1} is a STATUE - passed ALL filters including material check`);
+
+            */
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
@@ -741,13 +861,6 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
             });
           });
 
-          // Drop stale motion signatures (keep memory bounded)
-          regionMotionHistoryRef.current.forEach((entry, key) => {
-            if (currentTime - entry.timestamp > 4000) {
-              regionMotionHistoryRef.current.delete(key);
-            }
-          });
-
           // Add newly detected regions to history with current timestamp
           detectedRegionsForDisplay.forEach(region => {
             detectedRegionsHistoryRef.current.push({
@@ -756,70 +869,104 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
             });
           });
 
-          // Remove regions older than 1 second from history
+          // Remove regions older than BOX_PERSIST_MS from history
           detectedRegionsHistoryRef.current = detectedRegionsHistoryRef.current.filter(
-            item => currentTime - item.timestamp < 1000
+            item => currentTime - item.timestamp < BOX_PERSIST_MS
           );
 
-          // Get unique regions to display (merge current detections with recent history)
-          const regionsToDisplay: typeof detectedRegionsForDisplay = [];
-          const addedPositions = new Set<string>();
+            // Get unique regions to display (merge current detections with recent history)
+            // Prefer the highest-confidence region per position key (prevents stale low-confidence boxes).
+            const regionsByKey = new Map<string, (typeof detectedRegionsForDisplay)[number]>();
+            detectedRegionsHistoryRef.current.forEach(item => {
+              const key = `${Math.round(item.region.headCenterX)}_${Math.round(item.region.headCenterY)}`;
+              const existing = regionsByKey.get(key);
+              if (!existing || item.region.confidence > existing.confidence) {
+                regionsByKey.set(key, item.region);
+              }
+            });
 
-          detectedRegionsHistoryRef.current.forEach(item => {
-            const key = `${Math.round(item.region.headCenterX)}_${Math.round(item.region.headCenterY)}`;
-            if (!addedPositions.has(key)) {
-              regionsToDisplay.push(item.region);
-              addedPositions.add(key);
-            }
-          });
+            const regionsToDisplay = Array.from(regionsByKey.values());
+            const actionableRegions = regionsToDisplay.filter(r => r.confidence >= INTERACTION_CONFIDENCE_MIN);
 
-          // Draw all regions to display
-          regionsToDisplay.forEach((region) => {
-            // Draw circle with dashed orange line
+            if (detectedRegionsForDisplay.length === 0 && actionableRegions.length > 0) {
+            console.log(`⏱️ Showing ${regionsToDisplay.length} persistent detection boxes from recent history`);
+          }
+
+            // Draw all regions to display
+            actionableRegions.forEach((region) => {
+            ctx.save();
+            ctx.setLineDash([8, 6]);
+
+            // Draw circle
             ctx.beginPath();
-            ctx.setLineDash([6, 4]);
             ctx.arc(region.headCenterX, region.headCenterY, region.headRadius, 0, 2 * Math.PI);
-            ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)';
+            ctx.strokeStyle = 'rgba(255, 165, 0, 0.55)';
             ctx.lineWidth = 2;
             ctx.stroke();
 
-            // Draw detection box dashed orange
-            ctx.setLineDash([6, 4]);
-            ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)';
-            ctx.lineWidth = 1.5;
+            // Draw detection box (orange dashed)
+            ctx.strokeStyle = 'rgba(255, 165, 0, 0.85)';
+            ctx.lineWidth = 2;
             ctx.strokeRect(region.canvasX, region.canvasY, region.canvasWidth, region.canvasHeight);
 
             // Draw face number and confidence
-            ctx.setLineDash([]);
-            ctx.fillStyle = 'rgba(255, 165, 0, 0.9)';
+            ctx.fillStyle = 'rgba(255, 165, 0, 0.95)';
             ctx.font = 'bold 16px monospace';
             ctx.fillText(`#${region.index + 1}`, region.canvasX + 5, region.canvasY + 20);
             ctx.font = '12px monospace';
             ctx.fillText(`${(region.confidence * 100).toFixed(0)}%`, region.canvasX + 5, region.canvasY + 38);
+
+            ctx.restore();
           });
 
-          setDetectedHeads(headRegions);
+            const headsForInteraction: FaceRegion[] = actionableRegions.map((region) => {
+              const growthCenterX = region.headCenterX;
+              const growthCenterY = region.headCenterY + region.headRadius * 0.3;
+              const growthRadius = region.headRadius * 0.5;
 
-          // Manual capture only: show status but do not auto-trigger, so VICI stays clickable
-          if (headRegions.length > 0) {
-            setStatusText(`${headRegions.length} STATUE(S) DETECTED - READY`);
-          } else {
-            setStatusText("Point camera at STATUES");
-          }
+              return {
+                centerX: region.headCenterX / canvas.width,
+                centerY: region.headCenterY / canvas.height,
+                radius: region.headRadius / Math.max(canvas.width, canvas.height),
+                confidence: region.confidence,
+                growthCenterX: growthCenterX / canvas.width,
+                growthCenterY: growthCenterY / canvas.height,
+                growthRadius: growthRadius / Math.max(canvas.width, canvas.height)
+              };
+            });
 
-          // keep latest detections in a ref for immediate button press
-          if (headRegions.length > 0) {
-            lastDetectedHeadsRef.current = headRegions;
-          }
+            detectedHeadsRef.current = headsForInteraction;
+            setDetectedHeads(headsForInteraction);
+
+            // AUTO-CAPTURE LOGIC: Trigger after a short dwell time
+            if (headsForInteraction.length > 0) {
+              detectionStableCountRef.current++;
+
+              const requiredFrames = Math.ceil(AUTO_CAPTURE_MS / 200);
+              if (detectionStableCountRef.current >= requiredFrames && !autoCaptureFiredRef.current) {
+                console.log("AUTO-CAPTURE: Target stable - triggering capture!");
+                autoCaptureFiredRef.current = true;
+
+                // Trigger capture immediately
+                setTimeout(() => {
+                  handleInteraction();
+                }, 50);
+              }
+
+              setStatusText(`${headsForInteraction.length} TARGET(S) DETECTED`);
+            } else {
+              detectionStableCountRef.current = 0;
+              setStatusText("Point camera at TARGET");
+            }
 
       } catch (err) {
         console.error("Detection error:", err);
       }
     };
 
-    // Run detection every 90ms (more responsive)
+    // Run detection every 200ms (faster response, still efficient)
     detectFaces();
-    const intervalId = setInterval(detectFaces, 90);
+    const intervalId = setInterval(detectFaces, 200);
     detectionIntervalRef.current = intervalId as any;
 
     return () => {
@@ -854,14 +1001,14 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
 
-        // Check if at least one statue is detected (use latest ref to avoid race where state cleared)
-        const heads = detectedHeads.length > 0 ? detectedHeads : lastDetectedHeadsRef.current;
+        const heads = detectedHeadsRef.current;
 
-        if (!heads || heads.length === 0) {
-          setStatusText("NO STATUES DETECTED");
-          setTimeout(() => setStatusText("Point camera at STATUES"), 2000);
-          return;
-        }
+        // Require at least one visible/actionable detection box (confidence >= 40%)
+          if (heads.length === 0) {
+            setStatusText("NO TARGET DETECTED");
+            setTimeout(() => setStatusText("Point camera at TARGET"), 1200);
+            return;
+          }
 
         setGameState(GameState.CAPTURING);
         setStatusText("");
@@ -890,7 +1037,7 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
           detected: true,
           faceRegions: heads,
           confidence: heads.reduce((sum, head) => sum + head.confidence, 0) / heads.length,
-          label: `${heads.length} statue(s)`
+          label: `${heads.length} target(s)`
         };
 
         setAnalysisResult(result);
@@ -903,7 +1050,7 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
         setGrowthTrigger(prev => prev + 1);
     }
 
-  }, [gameState, detectedHeads, viciClickCount]);
+  }, [gameState, viciClickCount]);
 
   const handleReset = () => {
     setGameState(GameState.IDLE);
@@ -911,10 +1058,10 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
     setAnalysisResult(null);
     setGrowthTrigger(0);
     setDetectedHeads([]);
-    setStatusText("Point camera at STATUES");
+    detectedHeadsRef.current = [];
+    setStatusText("Point camera at TARGET");
     detectionStableCountRef.current = 0;
     autoCaptureFiredRef.current = false;
-    lastDetectedHeadsRef.current = [];
   };
 
   return (
