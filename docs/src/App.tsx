@@ -122,32 +122,30 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Initialize MediaPipe Face Detection (Full Range Model for 5m+ distance)
+  // Initialize MediaPipe Face Detection
   useEffect(() => {
     let cancelled = false;
 
     const initDetector = async () => {
       try {
-        console.log("Loading MediaPipe FaceDetector (Full Range Model for distant faces)...");
+        console.log("Loading MediaPipe FaceDetector...");
         setStatusText("LOADING DETECTOR...");
 
         // Load MediaPipe Vision FilesetResolver
         const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
         );
 
         if (cancelled) return;
 
-        // Create FaceDetector with Full Range model
-        // Short Range: < 2m, Full Range: 5m+ ← CRITICAL for distant detection
+        // Create FaceDetector with optimized settings
         const detector = await FaceDetector.createFromOptions(vision, {
           baseOptions: {
-            // Use Full Range model for detecting distant faces (5m+)
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_long_range/float16/1/blaze_face_long_range.tflite",
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
             delegate: "GPU"
           },
           runningMode: "VIDEO",
-          minDetectionConfidence: 0.4,  // Lower threshold for distant faces
+          minDetectionConfidence: 0.3,  // Lower for better distant detection
           minSuppressionThreshold: 0.3
         });
 
@@ -156,10 +154,11 @@ const App: React.FC = () => {
         faceDetectorRef.current = detector;
         setIsDetectorReady(true);
         setStatusText("READY - Point camera at faces");
-        console.log("MediaPipe FaceDetector (Full Range) loaded successfully - READY!");
+        console.log("MediaPipe FaceDetector loaded successfully!");
       } catch (err) {
         console.error("Failed to initialize MediaPipe detector:", err);
-        setStatusText("DETECTOR ERROR");
+        console.error("Error details:", err);
+        setStatusText("DETECTOR ERROR - Check console");
         setGameState(GameState.ERROR);
       }
     };
