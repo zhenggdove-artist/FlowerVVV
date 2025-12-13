@@ -25,8 +25,8 @@ function calculateIoU(box1: any, box2: any): number {
   return intersectionArea / unionArea;
 }
 
-// Helper: Detect human skin tone (excludes humans from statue detection)
-function hasSkinTone(
+// Helper: Detect OBVIOUS human skin (very conservative to avoid filtering statues)
+function hasObviousHumanSkin(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
@@ -55,35 +55,33 @@ function hasSkinTone(
 
       totalPixels++;
 
-      // Human skin tone detection (RGB ranges for various skin tones)
-      // Light to dark skin: R>G>B pattern with specific ratios
-      const isLightSkin = (r > 95 && g > 40 && b > 20) &&
-                         (r > g && g > b) &&
-                         (Math.abs(r - g) > 15) &&
-                         (r - b > 15);
+      // VERY CONSERVATIVE skin detection - only obvious human skin tones
+      // Exclude metallic/bronze colors (which have higher saturation in certain channels)
 
-      const isMediumSkin = (r > 80 && g > 50 && b > 30) &&
-                          (r > g && g >= b) &&
-                          (r - g > 10);
+      // Typical human skin: pinkish with moderate saturation
+      const isPinkishHumanSkin = (r > 150 && r < 255) &&
+                                 (g > 100 && g < 220) &&
+                                 (b > 90 && b < 200) &&
+                                 (r > g && g > b) &&
+                                 (r - g > 20 && r - g < 80) &&
+                                 (g - b > 10 && g - b < 50);
 
-      const isDarkSkin = (r > 45 && g > 30 && b > 20) &&
-                        (r > g && g > b);
+      // Beige/tan human skin
+      const isBeigeHumanSkin = (r > 180 && r < 255) &&
+                               (g > 140 && g < 210) &&
+                               (b > 100 && b < 180) &&
+                               (r - b > 30 && r - b < 100);
 
-      // Also check for pinkish/reddish tones (caucasian skin)
-      const isPinkishSkin = (r > 150 && g > 100 && b > 80) &&
-                           (r > g && r > b) &&
-                           (r - g < 50);
-
-      if (isLightSkin || isMediumSkin || isDarkSkin || isPinkishSkin) {
+      if (isPinkishHumanSkin || isBeigeHumanSkin) {
         skinPixels++;
       }
     }
 
     const skinPercentage = totalPixels > 0 ? skinPixels / totalPixels : 0;
 
-    // If > 20% of sampled pixels are skin tone → it's a human
+    // Much higher threshold: only if >40% clearly human skin
     return {
-      hasSkin: skinPercentage > 0.2,
+      hasSkin: skinPercentage > 0.4,
       skinPercentage
     };
   } catch (err) {
@@ -100,10 +98,10 @@ function analyzeStatueCharacteristics(
   height: number
 ): { isStatue: boolean; saturation: number; colorVariance: number; confidence: number; hasSkin: boolean } {
   try {
-    // FIRST: Check for human skin tone (immediate disqualification)
-    const skinCheck = hasSkinTone(ctx, x, y, width, height);
+    // FIRST: Check for OBVIOUS human skin tone only
+    const skinCheck = hasObviousHumanSkin(ctx, x, y, width, height);
     if (skinCheck.hasSkin) {
-      // Has skin tone → definitely human → NOT a statue
+      // Very obvious human skin → probably human → NOT a statue
       return {
         isStatue: false,
         saturation: 1.0,
@@ -182,23 +180,25 @@ function analyzeStatueCharacteristics(
     // Calculate brightness variance
     const brightnessVariance = values.reduce((sum, v) => sum + Math.pow(v - avgValue, 2), 0) / values.length;
 
-    // STRICTER STATUE CRITERIA (to avoid false positives with humans):
-    // 1. VERY low saturation (< 0.22) - monochrome surface (stricter!)
-    // 2. Low hue variance (< 300) - uniform color (stricter!)
-    // 3. Low brightness variance (< 0.04) - smooth surface (stricter!)
+    // BALANCED STATUE CRITERIA for various materials (metal, stone, marble, concrete):
+    // 1. Relatively low saturation (< 0.45) - allows bronze, copper, painted statues
+    // 2. Moderate hue variance (< 600) - allows some color variation in materials
+    // 3. Smooth to moderate surface (< 0.08) - allows texture in stone/concrete
 
-    const veryLowSaturation = avgSaturation < 0.22;  // More strict (was 0.3)
-    const veryUniformColor = hueVariance < 300;       // More strict (was 400)
-    const verySmoothSurface = brightnessVariance < 0.04; // More strict (was 0.05)
+    const lowSaturation = avgSaturation < 0.45;    // Relaxed for bronze/copper statues
+    const moderatelyUniform = hueVariance < 600;    // Relaxed for material variations
+    const reasonablySmooth = brightnessVariance < 0.08; // Relaxed for stone texture
 
     // Calculate confidence score
     let confidence = 0;
-    if (veryLowSaturation) confidence += 0.5;
-    if (veryUniformColor) confidence += 0.3;
-    if (verySmoothSurface) confidence += 0.2;
+    if (lowSaturation) confidence += 0.4;
+    if (moderatelyUniform) confidence += 0.3;
+    if (reasonablySmooth) confidence += 0.3;
 
-    // STRICT Decision: ALL 3 criteria must be met for statue
-    const isStatue = veryLowSaturation && veryUniformColor && verySmoothSurface;
+    // BALANCED Decision: 2 out of 3 criteria (flexible for various statue materials)
+    const isStatue = (lowSaturation && moderatelyUniform) ||
+                     (lowSaturation && reasonablySmooth) ||
+                     (moderatelyUniform && reasonablySmooth);
 
     return {
       isStatue,
