@@ -324,6 +324,7 @@ const App: React.FC = () => {
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
   const detectionStableCountRef = useRef<number>(0);
   const autoCaptureFiredRef = useRef<boolean>(false);
+  const lastDetectedHeadsRef = useRef<FaceRegion[]>([]);
 
   // For detection box persistence (2 second minimum display per box)
   const detectedRegionsHistoryRef = useRef<Array<{
@@ -402,8 +403,8 @@ const App: React.FC = () => {
             delegate: "GPU"
           },
           runningMode: "VIDEO",
-          minDetectionConfidence: 0.32,
-          minSuppressionThreshold: 0.2
+          minDetectionConfidence: 0.28,
+          minSuppressionThreshold: 0.15
         });
         console.log("✅ FaceDetector created with FULL-RANGE model");
       } catch (err) {
@@ -414,8 +415,8 @@ const App: React.FC = () => {
             delegate: "GPU"
           },
           runningMode: "VIDEO",
-          minDetectionConfidence: 0.35,
-          minSuppressionThreshold: 0.25
+          minDetectionConfidence: 0.32,
+          minSuppressionThreshold: 0.2
         });
         console.log("✅ FaceDetector created with SHORT-RANGE fallback");
       }
@@ -649,18 +650,18 @@ const App: React.FC = () => {
             }
 
             // Filter 2: Reject detections that are too small (noise)
-            // For MediaPipe: minimum 1.2% of video width or 10 pixels (allow distant statues)
+            // For MediaPipe: minimum 1.0% of video width or 8 pixels (allow distant statues)
             const minFaceSize = DETECTION_ENGINE === 'MEDIAPIPE'
-              ? Math.max(10, video.videoWidth * 0.012)
-              : Math.max(8, video.videoWidth * 0.01);
+              ? Math.max(8, video.videoWidth * 0.01)
+              : Math.max(6, video.videoWidth * 0.008);
             if (width < minFaceSize || height < minFaceSize) {
               console.log(`  ❌ FILTER 2 FAIL: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize.toFixed(0)})`);
               return;
             }
 
             // Filter 3: Reject detections with low confidence
-            // MediaPipe: Match relaxed minDetectionConfidence (0.32), BlazeFace: 0.20
-            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.32 : 0.2;
+            // MediaPipe: Match relaxed minDetectionConfidence (0.28), BlazeFace: 0.18
+            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.28 : 0.18;
             if (confidence < minConfidence) {
               console.log(`  ❌ FILTER 3 FAIL: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}%)`);
               return;
@@ -677,7 +678,7 @@ const App: React.FC = () => {
 
             // Filter 5: Position sanity check - reject detections at extreme edges
             // Faces at very edge of frame are often false positives
-            const edgeMargin = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.02 : 0; // 2% margin for MediaPipe
+            const edgeMargin = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.01 : 0; // 1% margin for MediaPipe
             const minX = video.videoWidth * edgeMargin;
             const maxX = video.videoWidth * (1 - edgeMargin);
             const minY = video.videoHeight * edgeMargin;
@@ -844,14 +845,19 @@ const App: React.FC = () => {
             setStatusText("Point camera at STATUES");
           }
 
+          // keep latest detections in a ref for immediate button press
+          if (headRegions.length > 0) {
+            lastDetectedHeadsRef.current = headRegions;
+          }
+
       } catch (err) {
         console.error("Detection error:", err);
       }
     };
 
-    // Run detection every 120ms (more responsive)
+    // Run detection every 90ms (more responsive)
     detectFaces();
-    const intervalId = setInterval(detectFaces, 120);
+    const intervalId = setInterval(detectFaces, 90);
     detectionIntervalRef.current = intervalId as any;
 
     return () => {
@@ -886,8 +892,10 @@ const App: React.FC = () => {
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
 
-        // Check if at least one statue is detected
-        if (detectedHeads.length === 0) {
+        // Check if at least one statue is detected (use latest ref to avoid race where state cleared)
+        const heads = detectedHeads.length > 0 ? detectedHeads : lastDetectedHeadsRef.current;
+
+        if (!heads || heads.length === 0) {
           setStatusText("NO STATUES DETECTED");
           setTimeout(() => setStatusText("Point camera at STATUES"), 2000);
           return;
@@ -918,9 +926,9 @@ const App: React.FC = () => {
         // Create result with all detected head regions
         const result: AnalysisResult = {
           detected: true,
-          faceRegions: detectedHeads,
-          confidence: detectedHeads.reduce((sum, head) => sum + head.confidence, 0) / detectedHeads.length,
-          label: `${detectedHeads.length} statue(s)`
+          faceRegions: heads,
+          confidence: heads.reduce((sum, head) => sum + head.confidence, 0) / heads.length,
+          label: `${heads.length} statue(s)`
         };
 
         setAnalysisResult(result);
@@ -944,6 +952,7 @@ const App: React.FC = () => {
     setStatusText("Point camera at STATUES");
     detectionStableCountRef.current = 0;
     autoCaptureFiredRef.current = false;
+    lastDetectedHeadsRef.current = [];
   };
 
   return (
