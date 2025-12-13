@@ -126,15 +126,15 @@ const App: React.FC = () => {
 
     const initDetector = async () => {
       try {
-        console.log("Loading BlazeFace (optimized for multiple faces and distant detection)...");
+        console.log("Loading BlazeFace (optimized for multiple faces with quality filtering)...");
         setStatusText("LOADING DETECTOR...");
 
-        // Load BlazeFace with optimized settings for detecting multiple faces
-        // Lower scoreThreshold to detect more faces including distant ones
+        // Load BlazeFace with balanced settings for detecting multiple faces
+        // Combined with post-detection filters to ensure quality
         const blazeModel = await blazeface.load({
-          maxFaces: 50,           // Increase to 50 to detect more faces in group scenes
-          iouThreshold: 0.2,      // Lower IOU threshold for better detection of overlapping faces
-          scoreThreshold: 0.4     // Lower threshold to detect distant/unclear faces (default 0.75)
+          maxFaces: 50,           // Detect up to 50 faces in group scenes
+          iouThreshold: 0.25,     // Balanced IOU threshold for overlapping faces
+          scoreThreshold: 0.5     // Balanced threshold with post-filters (default 0.75)
         });
 
         if (cancelled) return;
@@ -280,6 +280,39 @@ const App: React.FC = () => {
             const confidence = face.probability ? face.probability[0] : 0.9;
 
             console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] confidence=${confidence.toFixed(2)}`);
+
+            // FILTER OUT INVALID DETECTIONS
+            // Filter 1: Reject detections that are too large (likely false positives)
+            // A valid face should not exceed 70% of video width or height
+            const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * 0.7;
+            if (width > maxFaceSize || height > maxFaceSize) {
+              console.log(`  ❌ REJECTED: Face ${index + 1} too large (${width.toFixed(0)}x${height.toFixed(0)} exceeds ${maxFaceSize.toFixed(0)})`);
+              return;
+            }
+
+            // Filter 2: Reject detections that are too small (noise)
+            // A valid face should be at least 20 pixels in both dimensions
+            const minFaceSize = 20;
+            if (width < minFaceSize || height < minFaceSize) {
+              console.log(`  ❌ REJECTED: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize})`);
+              return;
+            }
+
+            // Filter 3: Reject detections with very low confidence
+            if (confidence < 0.45) {
+              console.log(`  ❌ REJECTED: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}%)`);
+              return;
+            }
+
+            // Filter 4: Aspect ratio check - faces should be roughly square to oval
+            // Reject extremely wide or tall detections
+            const aspectRatio = Math.max(width, height) / Math.min(width, height);
+            if (aspectRatio > 2.5) {
+              console.log(`  ❌ REJECTED: Face ${index + 1} invalid aspect ratio (${aspectRatio.toFixed(2)})`);
+              return;
+            }
+
+            console.log(`  ✅ ACCEPTED: Face ${index + 1} passed all filters`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
