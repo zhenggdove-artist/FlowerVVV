@@ -5,44 +5,44 @@ import { GameState, AnalysisResult, FaceRegion, ColorScheme } from './types.ts';
 import * as blazeface from '@tensorflow-models/blazeface';
 import '@tensorflow/tfjs';
 
-// Fixed color schemes that cycle every 10 clicks
+// Color schemes pool for random selection
 const colorSchemes: ColorScheme[] = [
-  // Scheme 0: Pink (clicks 1-10)
+  // Scheme 0: Pink
   {
     head: { r: 0.0, g: 1.0, b: 0.5 },
     vine: { r: 0.05, g: 0.35, b: 0.15 },
     flower: { r: 1.0, g: 0.1, b: 0.9 },
     bug: { r: 1.0, g: 0.3, b: 0.8 }
   },
-  // Scheme 1: Yellow/Orange (clicks 11-20)
+  // Scheme 1: Yellow/Orange
   {
     head: { r: 0.0, g: 1.0, b: 0.5 },
     vine: { r: 0.1, g: 0.4, b: 0.1 },
     flower: { r: 1.0, g: 0.8, b: 0.0 },
     bug: { r: 1.0, g: 0.6, b: 0.0 }
   },
-  // Scheme 2: Purple/Violet (clicks 21-30)
+  // Scheme 2: Purple/Violet
   {
     head: { r: 0.0, g: 1.0, b: 0.5 },
     vine: { r: 0.15, g: 0.3, b: 0.2 },
     flower: { r: 0.6, g: 0.2, b: 1.0 },
     bug: { r: 0.8, g: 0.3, b: 1.0 }
   },
-  // Scheme 3: Red (clicks 31-40)
+  // Scheme 3: Red
   {
     head: { r: 0.0, g: 1.0, b: 0.5 },
     vine: { r: 0.1, g: 0.35, b: 0.1 },
     flower: { r: 1.0, g: 0.1, b: 0.1 },
     bug: { r: 1.0, g: 0.2, b: 0.3 }
   },
-  // Scheme 4: Blue/Cyan (clicks 41-50)
+  // Scheme 4: Blue/Cyan
   {
     head: { r: 0.0, g: 1.0, b: 0.5 },
     vine: { r: 0.05, g: 0.3, b: 0.25 },
     flower: { r: 0.0, g: 0.6, b: 1.0 },
     bug: { r: 0.2, g: 0.8, b: 1.0 }
   },
-  // Scheme 5: White/Light (clicks 51-60)
+  // Scheme 5: White/Light
   {
     head: { r: 0.0, g: 1.0, b: 0.5 },
     vine: { r: 0.1, g: 0.4, b: 0.15 },
@@ -51,10 +51,12 @@ const colorSchemes: ColorScheme[] = [
   }
 ];
 
-// Get color scheme based on click count (every 5 clicks for testing)
-const getColorScheme = (clickCount: number): ColorScheme => {
-  const schemeIndex = Math.floor((clickCount - 1) / 5) % colorSchemes.length;
-  return colorSchemes[schemeIndex];
+const colorSchemeNames = ['Pink', 'Yellow', 'Purple', 'Red', 'Blue', 'White'];
+
+// Get random color scheme (no longer sequential)
+const getRandomColorScheme = (): ColorScheme => {
+  const randomIndex = Math.floor(Math.random() * colorSchemes.length);
+  return colorSchemes[randomIndex];
 };
 
 const App: React.FC = () => {
@@ -83,7 +85,8 @@ const App: React.FC = () => {
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
-  const [currentColorScheme, setCurrentColorScheme] = useState<ColorScheme>(getColorScheme(1));
+  const [currentColorScheme, setCurrentColorScheme] = useState<ColorScheme>(colorSchemes[0]); // Start with pink
+  const [currentColorIndex, setCurrentColorIndex] = useState<number>(0);
 
   console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "heads:", detectedHeads.length, "clicks:", viciClickCount);
 
@@ -316,12 +319,18 @@ const App: React.FC = () => {
     const newClickCount = viciClickCount + 1;
     setViciClickCount(newClickCount);
 
-    // Change color every 5 clicks (for testing)
+    // Change color every 5 clicks with RANDOM selection
     if ((newClickCount - 1) % 5 === 0) {
-      const newColorScheme = getColorScheme(newClickCount);
+      const newColorScheme = getRandomColorScheme();
+      const newColorIndex = colorSchemes.findIndex(
+        scheme => scheme.flower.r === newColorScheme.flower.r &&
+                  scheme.flower.g === newColorScheme.flower.g &&
+                  scheme.flower.b === newColorScheme.flower.b
+      );
       setCurrentColorScheme(newColorScheme);
-      const schemeName = ['Pink', 'Yellow', 'Purple', 'Red', 'Blue', 'White'][Math.floor((newClickCount - 1) / 5) % 6];
-      console.log(`🎨 COLOR CHANGED to ${schemeName} at click ${newClickCount}:`, newColorScheme);
+      setCurrentColorIndex(newColorIndex);
+      const schemeName = colorSchemeNames[newColorIndex];
+      console.log(`🎨 COLOR CHANGED to ${schemeName} (RANDOM) at click ${newClickCount}:`, newColorScheme);
     }
 
     // IF IDLE: Capture and detect heads

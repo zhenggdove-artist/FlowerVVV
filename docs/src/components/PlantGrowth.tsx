@@ -16,6 +16,7 @@ interface PlantGrowthProps {
 const vertexShader = `
   uniform float uTime;
   attribute float aType; // 0:Dead, 1:Head, 2:Stem, 3:Flower, 4:Bug
+  attribute float aTimeOffset; // Random time offset for each particle
   attribute vec3 color;
   varying vec3 vColor;
 
@@ -23,21 +24,24 @@ const vertexShader = `
     vColor = color;
     vec3 pos = position;
 
+    // Apply time offset for natural, non-synchronized movement
+    float localTime = uTime + aTimeOffset;
+
     // Sway logic for Stems (2) and Flowers (3)
     if (aType > 1.5 && aType < 3.5) {
       float swayIntensity = (aType > 2.5) ? 3.0 : 1.0; // Flowers sway more
       float speed = 2.0;
       // Simple sine wave displacement based on Y position and Time
-      pos.x += sin(uTime * speed + pos.y * 0.05) * swayIntensity;
-      pos.y += cos(uTime * speed * 0.7 + pos.x * 0.05) * (swayIntensity * 0.5);
+      pos.x += sin(localTime * speed + pos.y * 0.05) * swayIntensity;
+      pos.y += cos(localTime * speed * 0.7 + pos.x * 0.05) * (swayIntensity * 0.5);
     }
 
     // Bug movement (4) - erratic flying
     if (aType > 3.5) {
       float speed = 5.0;
-      pos.x += sin(uTime * speed + pos.y * 0.2) * 8.0;
-      pos.y += cos(uTime * speed * 1.3 + pos.x * 0.15) * 8.0;
-      pos.x += sin(uTime * speed * 2.0) * 4.0;
+      pos.x += sin(localTime * speed + pos.y * 0.2) * 8.0;
+      pos.y += cos(localTime * speed * 1.3 + pos.x * 0.15) * 8.0;
+      pos.x += sin(localTime * speed * 2.0) * 4.0;
     }
 
     vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
@@ -193,6 +197,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     types: Float32Array; // 0: Dead, 1: Active Vine Head, 2: Vine Body (Static), 3: Flower, 4: Bug
     velocities: Float32Array;
     life: Float32Array;
+    timeOffsets: Float32Array; // Random time offset for each particle
     activeHeads: number[]; // Indices of active heads for HUD tracking
   } | null>(null);
 
@@ -298,10 +303,17 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     const positions = new Float32Array(MAX_PARTICLES * 3);
     const colors = new Float32Array(MAX_PARTICLES * 3);
     const aTypes = new Float32Array(MAX_PARTICLES).fill(0);
-    
+    const aTimeOffsets = new Float32Array(MAX_PARTICLES);
+
+    // Initialize random time offsets for natural movement
+    for (let i = 0; i < MAX_PARTICLES; i++) {
+      aTimeOffsets[i] = Math.random() * 100; // Random offset 0-100 seconds
+    }
+
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute('aType', new THREE.BufferAttribute(aTypes, 1));
+    geometry.setAttribute('aTimeOffset', new THREE.BufferAttribute(aTimeOffsets, 1));
 
     const material = new THREE.ShaderMaterial({
       uniforms: {
@@ -323,6 +335,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
       types: aTypes,
       velocities: new Float32Array(MAX_PARTICLES * 3),
       life: new Float32Array(MAX_PARTICLES),
+      timeOffsets: aTimeOffsets,
       activeHeads: []
     };
 
@@ -571,8 +584,8 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
             spawnStatic(x + (Math.random()-0.5)*10, y + (Math.random()-0.5)*10, 3, z);
         }
 
-        // Spawn bugs (small chance)
-        if (Math.random() < 0.015) {
+        // Spawn bugs (increased chance for more bugs)
+        if (Math.random() < 0.08) {
             spawnStatic(x + (Math.random()-0.5)*20, y + (Math.random()-0.5)*20, 4, z);
         }
 
