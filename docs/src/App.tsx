@@ -409,7 +409,7 @@ const App: React.FC = () => {
 
     cocoLoadingPromiseRef.current = promise;
     return promise;
-  }, [ensureCocoLoaded]);
+  }, []);
 
   // Handle Resize
   useEffect(() => {
