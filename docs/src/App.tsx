@@ -159,7 +159,7 @@ const analyzeStatueMaterial = (
   // 2. Low skin tone ratio (<15%) - not human skin color
   // 3. High gray ratio (>40%) - metallic/stone materials
 
-  if (avgSaturation < 40 && skinToneRatio < 0.4) {
+  if (avgSaturation < 80 && skinToneRatio < 0.7) {
     return {
       isStatue: true,
       reason: `Low saturation (${avgSaturation.toFixed(1)}%) + No skin tone`,
@@ -187,7 +187,7 @@ const analyzeStatueMaterial = (
   }
 
   // Edge case: medium saturation but no skin = possible colored statue
-  if (avgSaturation < 80 && skinToneRatio < 0.015) {
+  if (avgSaturation < 90 && skinToneRatio < 0.015) {
     return {
       isStatue: true,
       reason: 'Colored statue (low saturation, no skin)',
