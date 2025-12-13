@@ -10,7 +10,7 @@ import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
 // DUAL ENGINE CONFIGURATION
 // ============================================
 type DetectionEngine = 'BLAZEFACE' | 'MEDIAPIPE';
-const DETECTION_ENGINE: DetectionEngine = 'BLAZEFACE'; // Switch to 'MEDIAPIPE' to test
+const DETECTION_ENGINE: DetectionEngine = 'MEDIAPIPE'; // Switch to 'MEDIAPIPE' to test
 // ============================================
 
 // Color schemes pool for random selection (紅橙黃綠藍靛紫)
