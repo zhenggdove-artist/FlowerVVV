@@ -393,7 +393,7 @@ const App: React.FC = () => {
 
     cocoLoadingPromiseRef.current = promise;
     return promise;
-  }, []);
+  }, [ensureCocoLoaded]);
 
   // Handle Resize
   useEffect(() => {
@@ -406,10 +406,35 @@ const App: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
 
+    const setDetectorProgress = (progress: number, phase: string) => {
+      if (cancelled) return;
+      const pct = Math.max(0, Math.min(100, Math.round(progress)));
+      setStatusText(`LOADING DETECTORS ${pct}%${phase ? ` (${phase})` : ''}`);
+    };
+
+    function runWithProgress<T>(
+      phase: string,
+      startPercent: number,
+      endPercent: number,
+      task: () => Promise<T>
+    ): Promise<T> {
+      setDetectorProgress(startPercent, phase);
+
+      let current = startPercent;
+      const interval = window.setInterval(() => {
+        if (cancelled) return;
+        current = Math.min(endPercent - 1, current + 1);
+        setDetectorProgress(current, phase);
+      }, 120);
+
+      return task().finally(() => {
+        window.clearInterval(interval);
+        setDetectorProgress(endPercent, phase);
+      });
+    }
+
     const initBlazeFace = async () => {
       console.log("🔵 Initializing BlazeFace with AGGRESSIVE settings...");
-      setStatusText("LOADING BLAZEFACE...");
-
         const blazeModel = await blazeface.load({
           maxFaces: 100,
           iouThreshold: 0.1,
@@ -425,8 +450,6 @@ const App: React.FC = () => {
 
     const initMediaPipe = async () => {
       console.log("🟣 Initializing MediaPipe FaceDetector with OPTIMIZED settings...");
-      setStatusText("LOADING MEDIAPIPE...");
-
       console.log("📦 Loading MediaPipe Vision wasm files...");
       const vision = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
@@ -470,46 +493,28 @@ const App: React.FC = () => {
 
     const initDetector = async () => {
       try {
-        let ok = false;
+        const mediapipeOk = await runWithProgress('MEDIAPIPE', 0, 40, () =>
+          initMediaPipe().catch((err) => {
+            console.error("MediaPipe init failed:", err);
+            return false;
+          })
+        );
 
-        if (DETECTION_ENGINE === 'HYBRID') {
-          const mediapipeOk = await initMediaPipe().catch((err) => {
-            console.error("MediaPipe init failed:", err);
-            return false;
-          });
-          const blazeOk = await initBlazeFace().catch((err) => {
+        const blazeOk = await runWithProgress('BLAZEFACE', 40, 70, () =>
+          initBlazeFace().catch((err) => {
             console.error("BlazeFace init failed:", err);
             return false;
-          });
-          ok = Boolean(mediapipeOk || blazeOk);
-        } else if (DETECTION_ENGINE === 'BLAZEFACE') {
-          const blazeOk = await initBlazeFace().catch((err) => {
-            console.error("BlazeFace init failed:", err);
-            return false;
-          });
-          const mediapipeOk = blazeOk
-            ? false
-            : await initMediaPipe().catch((err) => {
-                console.error("MediaPipe init failed:", err);
-                return false;
-              });
-          ok = Boolean(blazeOk || mediapipeOk);
-        } else {
-          const mediapipeOk = await initMediaPipe().catch((err) => {
-            console.error("MediaPipe init failed:", err);
-            return false;
-          });
-          const blazeOk = mediapipeOk
-            ? false
-            : await initBlazeFace().catch((err) => {
-                console.error("BlazeFace init failed:", err);
-                return false;
-              });
-          ok = Boolean(mediapipeOk || blazeOk);
-        }
+          })
+        );
+
+        await runWithProgress('PERSON', 70, 100, async () => {
+          await ensureCocoLoaded();
+          return true;
+        });
 
         if (cancelled) return;
 
+        const ok = Boolean(mediapipeOk || blazeOk);
         if (!ok) {
           throw new Error("No detection model initialized");
         }
@@ -761,8 +766,9 @@ const App: React.FC = () => {
                   const [px, py, pw, ph] = d.bbox;
                   const aspect = ph / Math.max(1, pw);
 
-                  const headHeightRatio = aspect < 1.2 ? 0.55 : 0.35;
-                  const headWidthRatio = aspect < 1.2 ? 0.8 : 0.5;
+                  // Derive a head-only region from the person box (do NOT display body boxes)
+                  const headHeightRatio = aspect < 1.2 ? 0.45 : 0.3;
+                  const headWidthRatio = aspect < 1.2 ? 0.65 : 0.45;
 
                   const headW = pw * headWidthRatio;
                   const headH = ph * headHeightRatio;
@@ -1069,6 +1075,7 @@ const App: React.FC = () => {
   }, [gameState, isDetectorReady, viewport.width, viewport.height, isInitialized]);
 
   const handleInteraction = useCallback(async () => {
+    if (!isInitialized || !isDetectorReady) return;
     // Increment VICI click counter
     const newClickCount = viciClickCount + 1;
     setViciClickCount(newClickCount);
@@ -1097,14 +1104,6 @@ const App: React.FC = () => {
 
         // Require at least one visible/actionable detection box (confidence >= 40%)
           if (heads.length === 0) {
-            if (!cocoDetectorRef.current && !cocoLoadFailedRef.current) {
-              setStatusText("LOADING BODY DETECTOR...");
-              void ensureCocoLoaded().then(() => {
-                setStatusText("Point camera at TARGET");
-              });
-              return;
-            }
-
             setStatusText("NO TARGET DETECTED");
             setTimeout(() => setStatusText("Point camera at TARGET"), 1200);
             return;
@@ -1150,7 +1149,7 @@ const App: React.FC = () => {
         setGrowthTrigger(prev => prev + 1);
     }
 
-  }, [gameState, viciClickCount]);
+  }, [gameState, isDetectorReady, isInitialized, viciClickCount]);
 
   const handleReset = () => {
     setGameState(GameState.IDLE);
