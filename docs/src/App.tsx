@@ -179,7 +179,7 @@ const analyzeStatueMaterial = (
   let hairSamples = 0;
 
   const stride = Math.max(1, Math.floor(Math.min(width, height) / 24));
-  const hairRegionY = Math.max(1, Math.floor(height * 0.3)); // top 30% area for hair check
+  const hairRegionY = Math.max(1, Math.floor(height * 0.35)); // top ~35% area for hair check
 
   for (let y = 0; y < height; y += stride) {
     for (let x = 0; x < width; x += stride) {
@@ -218,7 +218,7 @@ const analyzeStatueMaterial = (
       // Hair heuristic: dense dark band near top of head = likely real human hair
       if (y <= hairRegionY) {
         const sat = max === 0 ? 0 : (delta / max) * 100;
-        if (luma < 65 && sat < 65) {
+        if (luma < 90 && sat < 90) {
           hairDarkCount++;
         }
         hairSamples++;
@@ -248,37 +248,20 @@ const analyzeStatueMaterial = (
   const edgeDensity = edgeSum / (Math.max(1, totalSamples) * 255 * 2);
   const hairDarkRatio = hairSamples > 0 ? hairDarkCount / hairSamples : 0;
 
-  console.log(`    dYZ" Material Analysis: sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%, tex=${(edgeDensity * 100).toFixed(1)}%, lumaStd=${lumaStd.toFixed(1)}`);
+  console.log(`    dYZ" Material Analysis: sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%, tex=${(edgeDensity * 100).toFixed(1)}%, lumaStd=${lumaStd.toFixed(1)}, hairDark=${(hairDarkRatio * 100).toFixed(1)}%`);
 
-  // Hair band heuristic: dark band on top with some saturation => likely human hair
-  const hairLooksHuman = hairDarkRatio > 0.28 && avgSaturation > 20 && grayRatio < 70;
+  // Hair band heuristic: dark band on top => likely human hair
+  const hairLooksHuman = hairDarkRatio > 0.18;
 
-  const lowSaturation = avgSaturation < 50; // relax to allow colored statues
-  const veryLowSkin = skinToneRatio < 0.12;
-  const tintedButStone = avgSaturation < 70 && grayRatio > 0.35 && veryLowSkin;
-  const stoneTexture = edgeDensity > 0.08 || lumaStd > 18;
+  let isStatue = true;
+  let reason = 'No human hair signature detected';
 
-  let isStatue = false;
-  let reason = '';
-
-  if (hairLooksHuman && skinToneRatio > 0.05) {
+  if (hairLooksHuman) {
     isStatue = false;
     reason = `Human hair detected (dark top ${(hairDarkRatio * 100).toFixed(1)}%)`;
-  } else if (skinToneRatio > 0.2) {
+  } else if (skinToneRatio > 0.35) {
     isStatue = false;
     reason = `Human skin detected (${(skinToneRatio * 100).toFixed(1)}%)`;
-  } else if ((lowSaturation && veryLowSkin && stoneTexture) || tintedButStone) {
-    isStatue = true;
-    reason = `Low/medium saturation + texture (sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%)`;
-  } else if (grayRatio > 0.55 && veryLowSkin) {
-    isStatue = true;
-    reason = `High gray ratio (${(grayRatio * 100).toFixed(1)}%)`;
-  } else if (lowSaturation && veryLowSkin) {
-    isStatue = true;
-    reason = 'Monochrome low-skin region';
-  } else {
-    isStatue = false;
-    reason = `Too colorful/skin-like (sat=${avgSaturation.toFixed(1)}%)`;
   }
 
   const signature = buildRegionSignature(tempCanvas);
@@ -326,21 +309,6 @@ const App: React.FC = () => {
   const autoCaptureFiredRef = useRef<boolean>(false);
   const lastDetectedHeadsRef = useRef<FaceRegion[]>([]);
 
-  // For detection box persistence (2 second minimum display per box)
-  const detectedRegionsHistoryRef = useRef<Array<{
-    region: {
-      canvasX: number;
-      canvasY: number;
-      canvasWidth: number;
-      canvasHeight: number;
-      headCenterX: number;
-      headCenterY: number;
-      headRadius: number;
-      confidence: number;
-      index: number;
-    };
-    timestamp: number;
-  }>>([]);
   const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; timestamp: number }>>(new Map());
 
   // Color scheme management
@@ -392,8 +360,8 @@ const App: React.FC = () => {
 
       console.log("🔧 Creating FaceDetector with WIDE-RANGE config (prefers small/far heads, falls back if needed)...");
       console.log("   - Model: blaze_face_full_range (captures small distant heads)");
-      console.log("   - minDetectionConfidence: 0.32 (higher sensitivity, statue filters handle false positives)");
-      console.log("   - minSuppressionThreshold: 0.20 (looser NMS to keep weak boxes)");
+      console.log("   - minDetectionConfidence: 0.28 (very sensitive; rely on hair/material filters to reject humans)");
+      console.log("   - minSuppressionThreshold: 0.15 (looser NMS to keep weak boxes)");
 
       let detector: FaceDetector | null = null;
       try {
@@ -776,19 +744,6 @@ const App: React.FC = () => {
             });
           });
 
-          // Add newly detected regions to history with current timestamp
-          detectedRegionsForDisplay.forEach(region => {
-            detectedRegionsHistoryRef.current.push({
-              region: region,
-              timestamp: currentTime
-            });
-          });
-
-          // Remove regions older than 2 seconds from history
-          detectedRegionsHistoryRef.current = detectedRegionsHistoryRef.current.filter(
-            item => currentTime - item.timestamp < 2000
-          );
-
           // Drop stale motion signatures (keep memory bounded)
           regionMotionHistoryRef.current.forEach((entry, key) => {
             if (currentTime - entry.timestamp > 4000) {
@@ -796,23 +751,8 @@ const App: React.FC = () => {
             }
           });
 
-          // Get unique regions to display (merge current detections with recent history)
-          const regionsToDisplay: typeof detectedRegionsForDisplay = [];
-          const addedPositions = new Set<string>();
-
-          // Add all regions from history (including current frame)
-          detectedRegionsHistoryRef.current.forEach(item => {
-            // Use center position as unique key (rounded to avoid floating point issues)
-            const key = `${Math.round(item.region.headCenterX)}_${Math.round(item.region.headCenterY)}`;
-            if (!addedPositions.has(key)) {
-              regionsToDisplay.push(item.region);
-              addedPositions.add(key);
-            }
-          });
-
-          if (detectedRegionsForDisplay.length === 0 && regionsToDisplay.length > 0) {
-            console.log(`⏱️ Showing ${regionsToDisplay.length} persistent detection boxes from recent history`);
-          }
+          // No persistence: only show current-frame detections for responsiveness
+          const regionsToDisplay = detectedRegionsForDisplay;
 
           // Draw all regions to display
           regionsToDisplay.forEach((region) => {
