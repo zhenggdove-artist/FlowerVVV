@@ -25,6 +25,50 @@ function calculateIoU(box1: any, box2: any): number {
   return intersectionArea / unionArea;
 }
 
+// Helper: Calculate color saturation from image region (for statue detection)
+function getRegionSaturation(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): number {
+  try {
+    // Sample center region (avoid edges)
+    const sampleX = Math.max(0, x + width * 0.25);
+    const sampleY = Math.max(0, y + height * 0.25);
+    const sampleW = Math.min(width * 0.5, ctx.canvas.width - sampleX);
+    const sampleH = Math.min(height * 0.5, ctx.canvas.height - sampleY);
+
+    if (sampleW <= 0 || sampleH <= 0) return 0.5;
+
+    const imageData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
+    const data = imageData.data;
+
+    let totalSaturation = 0;
+    let pixelCount = 0;
+
+    // Sample every 4th pixel for performance
+    for (let i = 0; i < data.length; i += 16) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+
+      // Calculate HSV saturation
+      const max = Math.max(r, g, b) / 255;
+      const min = Math.min(r, g, b) / 255;
+      const saturation = max === 0 ? 0 : (max - min) / max;
+
+      totalSaturation += saturation;
+      pixelCount++;
+    }
+
+    return pixelCount > 0 ? totalSaturation / pixelCount : 0.5;
+  } catch (err) {
+    return 0.5; // Default to neutral if error
+  }
+}
+
 // Helper: Merge overlapping detections from multi-scale detection
 function mergeOverlappingDetections(detections: any[], iouThreshold: number = 0.4): any[] {
   if (detections.length === 0) return [];
@@ -318,10 +362,19 @@ const App: React.FC = () => {
         // Merge overlapping detections using custom NMS (more lenient for distant faces)
         const mergedDetections = mergeOverlappingDetections(allDetections, 0.4);
 
+        // Count statues vs humans
+        const statueCount = mergedDetections.filter((f: any) => {
+          const [x, y] = f.topLeft;
+          const [x2, y2] = f.bottomRight;
+          const sat = getRegionSaturation(tempCtx!, x, y, x2 - x, y2 - y);
+          return sat < 0.25;
+        }).length;
+        const humanCount = mergedDetections.length - statueCount;
+
         if (useMultiScale) {
-          console.log(`🔍 Multi-scale (4 scales): ${allDetections.length} raw → ${mergedDetections.length} merged`);
+          console.log(`🔍 Multi-scale (4 scales): ${allDetections.length} raw → ${mergedDetections.length} merged (${statueCount} statues, ${humanCount} humans)`);
         } else {
-          console.log(`🔍 Fast detect (2 scales): ${mergedDetections.length} faces`);
+          console.log(`🔍 Fast detect (2 scales): ${mergedDetections.length} faces (${statueCount} statues, ${humanCount} humans)`);
         }
 
         // Clear previous drawings
@@ -355,7 +408,11 @@ const App: React.FC = () => {
             const confidence = face.probability ? face.probability[0] : 0.9;
             const detectionScale = face.scale || 1.0;
 
-            console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] conf=${confidence.toFixed(2)} scale=${detectionScale.toFixed(2)}x`);
+            // Calculate color saturation to identify statues (low saturation = statue)
+            const saturation = getRegionSaturation(tempCtx!, x, y, width, height);
+            const isStatue = saturation < 0.25; // Statues have low saturation (monochrome)
+
+            console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] conf=${confidence.toFixed(2)} scale=${detectionScale.toFixed(2)}x sat=${saturation.toFixed(2)} ${isStatue ? 'STATUE' : 'human'}`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
@@ -363,25 +420,84 @@ const App: React.FC = () => {
             const canvasWidth = (width / video.videoWidth) * drawWidth;
             const canvasHeight = (height / video.videoHeight) * drawHeight;
 
-            // For face detection, the entire bbox IS the head
-            const headCenterX = canvasX + canvasWidth / 2;
-            const headCenterY = canvasY + canvasHeight / 2;
-            const headRadius = Math.max(canvasWidth, canvasHeight) * 0.6;
+            // PRECISE HEAD POSITIONING using landmarks (eyes, nose, mouth)
+            let headCenterX, headCenterY, headRadius;
 
-            // Draw circle with 2pt semi-transparent line
+            if (face.landmarks && face.landmarks.length >= 6) {
+              // BlazeFace landmarks: [rightEye, leftEye, nose, mouth, rightEar, leftEar]
+              const rightEye = face.landmarks[0];
+              const leftEye = face.landmarks[1];
+              const nose = face.landmarks[2];
+              const mouth = face.landmarks[3];
+
+              // Calculate eye center (good reference for head center)
+              const eyeCenterX = (rightEye[0] + leftEye[0]) / 2;
+              const eyeCenterY = (rightEye[1] + leftEye[1]) / 2;
+
+              // Eye distance (helps estimate head size)
+              const eyeDistance = Math.sqrt(
+                Math.pow(leftEye[0] - rightEye[0], 2) +
+                Math.pow(leftEye[1] - rightEye[1], 2)
+              );
+
+              // Head center is slightly above eye line
+              const headCenterVideoX = eyeCenterX;
+              const headCenterVideoY = eyeCenterY - eyeDistance * 0.2; // Slightly up from eyes
+
+              // Convert to canvas coordinates
+              headCenterX = offsetX + (headCenterVideoX / video.videoWidth) * drawWidth;
+              headCenterY = offsetY + (headCenterVideoY / video.videoHeight) * drawHeight;
+
+              // Head radius based on eye distance (typical face width is ~1.5x eye distance)
+              // Vertical extent: from above eyes to below chin
+              const faceHeight = Math.abs(mouth[1] - eyeCenterY) * 2.2; // From eyes to mouth, extended
+              const faceWidth = eyeDistance * 1.8; // Eye distance to face width ratio
+
+              headRadius = Math.max(faceHeight, faceWidth) / 2 * (drawWidth / video.videoWidth);
+            } else {
+              // Fallback: use bbox if no landmarks
+              headCenterX = canvasX + canvasWidth / 2;
+              headCenterY = canvasY + canvasHeight / 2;
+              headRadius = Math.max(canvasWidth, canvasHeight) * 0.6;
+            }
+
+            // Draw circle with color-coded for statue vs human
             ctx.beginPath();
             ctx.arc(headCenterX, headCenterY, headRadius, 0, 2 * Math.PI);
-            ctx.strokeStyle = 'rgba(0, 255, 0, 0.6)';
-            ctx.lineWidth = 2;
+            if (isStatue) {
+              ctx.strokeStyle = 'rgba(255, 165, 0, 0.7)'; // Orange for statues
+              ctx.lineWidth = 3;
+            } else {
+              ctx.strokeStyle = 'rgba(0, 255, 0, 0.6)'; // Green for humans
+              ctx.lineWidth = 2;
+            }
             ctx.stroke();
 
             // Draw detection box
-            ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
+            if (isStatue) {
+              ctx.strokeStyle = 'rgba(255, 165, 0, 0.5)';
+            } else {
+              ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
+            }
             ctx.lineWidth = 1;
             ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
 
-            // Draw face number, confidence, and detection scale
-            ctx.fillStyle = 'rgba(0, 255, 0, 0.9)';
+            // Draw facial landmarks for debugging (if available)
+            if (face.landmarks && face.landmarks.length >= 6) {
+              const landmarks = face.landmarks;
+              ctx.fillStyle = 'rgba(255, 0, 255, 0.8)';
+              landmarks.forEach((lm: number[]) => {
+                const lmX = offsetX + (lm[0] / video.videoWidth) * drawWidth;
+                const lmY = offsetY + (lm[1] / video.videoHeight) * drawHeight;
+                ctx.beginPath();
+                ctx.arc(lmX, lmY, 3, 0, 2 * Math.PI);
+                ctx.fill();
+              });
+            }
+
+            // Draw face info
+            const labelColor = isStatue ? 'rgba(255, 165, 0, 0.9)' : 'rgba(0, 255, 0, 0.9)';
+            ctx.fillStyle = labelColor;
             ctx.font = 'bold 16px monospace';
             ctx.fillText(`#${index + 1}`, canvasX + 5, canvasY + 20);
             ctx.font = '12px monospace';
@@ -389,6 +505,8 @@ const App: React.FC = () => {
             ctx.font = '10px monospace';
             ctx.fillStyle = 'rgba(255, 255, 0, 0.9)';
             ctx.fillText(`${detectionScale.toFixed(2)}x`, canvasX + 5, canvasY + 52);
+            ctx.fillStyle = isStatue ? 'rgba(255, 140, 0, 0.9)' : 'rgba(100, 255, 100, 0.9)';
+            ctx.fillText(isStatue ? 'STATUE' : 'human', canvasX + 5, canvasY + 66);
 
             // Calculate GROWTH region - smaller circle in lower-middle part of head
             const growthCenterX = headCenterX;
