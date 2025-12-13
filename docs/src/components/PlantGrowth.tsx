@@ -42,10 +42,11 @@ const vertexShader = `
 
     vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
 
-    // Size attenuation manually or fixed
-    // Flowers: 3.0, Stems: 3.0, Bugs: 2.0
-    float size = 3.0;
-    if (aType > 3.5) size = 2.0; // Bugs smaller
+    // Larger sizes for better visibility
+    float size = 5.0;
+    if (aType > 2.5 && aType < 3.5) size = 8.0; // Flowers larger
+    else if (aType > 1.5 && aType < 2.5) size = 4.0; // Stems thicker
+    else if (aType > 3.5) size = 3.0; // Bugs
     gl_PointSize = (aType > 0.5) ? size : 0.0;
 
     gl_Position = projectionMatrix * mvPosition;
@@ -56,12 +57,98 @@ const fragmentShader = `
   varying vec3 vColor;
 
   void main() {
-    // Circular particles
     vec2 coord = gl_PointCoord - vec2(0.5);
-    if(length(coord) > 0.5) discard;
+    float dist = length(coord);
 
-    // Reduced opacity to prevent white glow when particles overlap
-    gl_FragColor = vec4(vColor, 0.5);
+    // Soft edges with gradient
+    float alpha = smoothstep(0.5, 0.3, dist);
+
+    // Add some organic variation
+    alpha *= (0.6 + 0.4 * sin(coord.x * 20.0) * cos(coord.y * 20.0));
+
+    gl_FragColor = vec4(vColor, alpha * 0.7);
+  }
+`;
+
+// Shader for leaves (mesh instances)
+const leafVertexShader = `
+  uniform float uTime;
+  varying vec3 vColor;
+  varying vec2 vUv;
+
+  void main() {
+    vColor = color;
+    vUv = uv;
+
+    vec3 pos = position;
+
+    // Gentle sway based on position
+    float sway = sin(uTime * 2.0 + pos.y * 0.1) * 0.3;
+    pos.x += sway * (1.0 - uv.x); // Sway more at the tip
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  }
+`;
+
+const leafFragmentShader = `
+  varying vec3 vColor;
+  varying vec2 vUv;
+
+  void main() {
+    // Leaf shape with veins
+    float centerVein = smoothstep(0.52, 0.48, abs(vUv.x - 0.5));
+    float sideVein1 = smoothstep(0.03, 0.0, abs(vUv.x - 0.3));
+    float sideVein2 = smoothstep(0.03, 0.0, abs(vUv.x - 0.7));
+    float veins = max(centerVein, max(sideVein1, sideVein2)) * 0.3;
+
+    // Leaf opacity - fade at edges
+    float edgeFade = smoothstep(0.0, 0.1, vUv.x) * smoothstep(1.0, 0.9, vUv.x);
+    edgeFade *= smoothstep(0.0, 0.1, vUv.y) * smoothstep(1.0, 0.8, vUv.y);
+
+    vec3 leafColor = mix(vColor, vColor * 0.7, veins);
+    gl_FragColor = vec4(leafColor, edgeFade * 0.8);
+  }
+`;
+
+// Shader for flowers (petal mesh instances)
+const flowerVertexShader = `
+  uniform float uTime;
+  varying vec3 vColor;
+  varying vec2 vUv;
+
+  void main() {
+    vColor = color;
+    vUv = uv;
+
+    vec3 pos = position;
+
+    // Gentle rotation/sway
+    float rotation = sin(uTime * 1.5 + pos.y * 0.05) * 0.2;
+    float cosR = cos(rotation);
+    float sinR = sin(rotation);
+    pos.xy = vec2(
+      pos.x * cosR - pos.y * sinR,
+      pos.x * sinR + pos.y * cosR
+    );
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  }
+`;
+
+const flowerFragmentShader = `
+  varying vec3 vColor;
+  varying vec2 vUv;
+
+  void main() {
+    // Petal shape - fade from center outward
+    vec2 center = vec2(0.5, 0.0);
+    float dist = length(vUv - center);
+    float petal = smoothstep(0.6, 0.3, dist);
+
+    // Add some color variation
+    vec3 petalColor = mix(vColor * 1.2, vColor * 0.8, dist);
+
+    gl_FragColor = vec4(petalColor, petal * 0.9);
   }
 `;
 
@@ -74,18 +161,24 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const frameIdRef = useRef<number>(0);
-  
+
   // Edge Detection Data
   const edgePointsRef = useRef<Float32Array | null>(null); // [x, y, x, y...]
   const edgeCountRef = useRef<number>(0);
-  
+
   // Surface Data (Face of the object)
   const surfacePointsRef = useRef<Float32Array | null>(null);
   const surfaceCountRef = useRef<number>(0);
-  
+
   // Particle System Refs
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
   const materialRef = useRef<THREE.ShaderMaterial | null>(null);
+
+  // Leaf and Flower Mesh Refs
+  const leafGroupRef = useRef<THREE.Group | null>(null);
+  const flowerGroupRef = useRef<THREE.Group | null>(null);
+  const leafMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
+  const flowerMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
   
   // Simulation Data (Structure of Arrays)
   const MAX_PARTICLES = 50000;
@@ -212,6 +305,32 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     const points = new THREE.Points(geometry, material);
     scene.add(points);
 
+    // Create leaf mesh system
+    const leafGeometry = new THREE.PlaneGeometry(15, 8); // Elliptical leaf shape
+    const leafMaterial = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 } },
+      vertexShader: leafVertexShader,
+      fragmentShader: leafFragmentShader,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    });
+    const leafGroup = new THREE.Group();
+    scene.add(leafGroup);
+
+    // Create flower mesh system (5 petals)
+    const flowerGeometry = new THREE.PlaneGeometry(10, 12);
+    const flowerMaterial = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 } },
+      vertexShader: flowerVertexShader,
+      fragmentShader: flowerFragmentShader,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    });
+    const flowerGroup = new THREE.Group();
+    scene.add(flowerGroup);
+
     dataRef.current = {
       positions: positions,
       colors: colors,
@@ -226,6 +345,10 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     rendererRef.current = renderer;
     geometryRef.current = geometry;
     materialRef.current = material;
+    leafGroupRef.current = leafGroup;
+    flowerGroupRef.current = flowerGroup;
+    leafMaterialRef.current = leafMaterial;
+    flowerMaterialRef.current = flowerMaterial;
 
     animate();
 
@@ -234,8 +357,23 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
       if (mountRef.current && renderer.domElement) {
         mountRef.current.removeChild(renderer.domElement);
       }
+
+      // Clean up leaf and flower meshes
+      leafGroup.children.forEach(child => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose();
+        }
+      });
+      flowerGroup.children.forEach(child => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose();
+        }
+      });
+
       geometry.dispose();
       material.dispose();
+      leafMaterial.dispose();
+      flowerMaterial.dispose();
       renderer.dispose();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -290,8 +428,9 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
             positions[i * 3 + 1] = y;
             positions[i * 3 + 2] = 0;
 
-            velocities[i * 3] = (Math.random() - 0.5) * 2;
-            velocities[i * 3 + 1] = (Math.random() - 0.5) * 2;
+            // Add upward bias for more natural plant growth
+            velocities[i * 3] = (Math.random() - 0.5) * 1.5;
+            velocities[i * 3 + 1] = Math.random() * 2 + 1; // Upward bias
 
             // Use colorScheme for head color (keep it greenish for visibility)
             colors[i * 3] = colorScheme.head.r;
@@ -328,10 +467,59 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
                 colors[idx * 3] = randomize(colorScheme.vine.r);
                 colors[idx * 3 + 1] = randomize(colorScheme.vine.g);
                 colors[idx * 3 + 2] = randomize(colorScheme.vine.b);
+
+                // Spawn leaves along the vine (randomly)
+                if (Math.random() < 0.3 && leafGroupRef.current) {
+                  const leafMesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(15, 8),
+                    leafMaterialRef.current!
+                  );
+                  leafMesh.position.set(x, y, 0);
+                  leafMesh.rotation.z = (Math.random() - 0.5) * 0.8; // Random angle
+                  const scale = 0.8 + Math.random() * 0.4;
+                  leafMesh.scale.set(scale, scale, 1);
+
+                  // Set leaf color
+                  (leafMesh.material as THREE.ShaderMaterial).uniforms.color = {
+                    value: new THREE.Color(
+                      randomize(colorScheme.vine.r),
+                      randomize(colorScheme.vine.g),
+                      randomize(colorScheme.vine.b)
+                    )
+                  };
+
+                  leafGroupRef.current.add(leafMesh);
+                }
              } else if (type === 3) { // FLOWER - Use colorScheme
                 colors[idx * 3] = randomize(colorScheme.flower.r);
                 colors[idx * 3 + 1] = randomize(colorScheme.flower.g);
                 colors[idx * 3 + 2] = randomize(colorScheme.flower.b);
+
+                // Create 5-petal flower
+                if (flowerGroupRef.current && Math.random() < 0.7) {
+                  for (let p = 0; p < 5; p++) {
+                    const petalMesh = new THREE.Mesh(
+                      new THREE.PlaneGeometry(10, 12),
+                      flowerMaterialRef.current!
+                    );
+                    const angle = (p / 5) * Math.PI * 2;
+                    petalMesh.position.set(x, y, 0);
+                    petalMesh.rotation.z = angle;
+                    const scale = 0.6 + Math.random() * 0.3;
+                    petalMesh.scale.set(scale, scale, 1);
+
+                    // Set petal color
+                    (petalMesh.material as THREE.ShaderMaterial).uniforms.color = {
+                      value: new THREE.Color(
+                        randomize(colorScheme.flower.r),
+                        randomize(colorScheme.flower.g),
+                        randomize(colorScheme.flower.b)
+                      )
+                    };
+
+                    flowerGroupRef.current.add(petalMesh);
+                  }
+                }
              } else if (type === 4) { // BUG - Use colorScheme
                 colors[idx * 3] = randomize(colorScheme.bug.r);
                 colors[idx * 3 + 1] = randomize(colorScheme.bug.g);
@@ -347,9 +535,11 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
     const { positions, types, velocities, life, activeHeads } = dataRef.current;
     const time = (Date.now() - startTimeRef.current) / 1000;
-    
-    // Update Shader Time
+
+    // Update Shader Time for all materials
     materialRef.current.uniforms.uTime.value = time;
+    if (leafMaterialRef.current) leafMaterialRef.current.uniforms.uTime.value = time;
+    if (flowerMaterialRef.current) flowerMaterialRef.current.uniforms.uTime.value = time;
 
     // HUD Context
     const ctx = hudCanvasRef.current?.getContext('2d');
@@ -404,16 +594,21 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
         positions[i * 3] += velocities[i * 3];
         positions[i * 3 + 1] += velocities[i * 3 + 1];
 
-        // Leave Vine
-        if (Math.random() < 0.6) {
+        // Leave Vine (less frequently for cleaner stems)
+        if (Math.random() < 0.4) {
             spawnStatic(x, y, 2);
         }
 
-        // Random Walk
-        velocities[i * 3] += (Math.random() - 0.5) * 0.8;
-        velocities[i * 3 + 1] += (Math.random() - 0.5) * 0.8;
-        velocities[i * 3] *= 0.92;
-        velocities[i * 3 + 1] *= 0.92;
+        // More natural plant growth - upward bias with slight randomness
+        velocities[i * 3] += (Math.random() - 0.5) * 0.6; // Horizontal variation
+        velocities[i * 3 + 1] += Math.random() * 0.3; // Upward bias
+        velocities[i * 3] *= 0.95; // Damping
+        velocities[i * 3 + 1] *= 0.98; // Less damping on Y for sustained growth
+
+        // Keep upward velocity positive
+        if (velocities[i * 3 + 1] < 0.5) {
+          velocities[i * 3 + 1] = 0.5 + Math.random() * 0.5;
+        }
 
         // Bloom
         if (Math.random() < 0.03) {
