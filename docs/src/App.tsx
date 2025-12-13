@@ -125,6 +125,12 @@ const analyzeHairOnTop = (
   const lumas = new Float32Array(SAMPLE * SAMPLE);
   let hairPixels = 0;
   let totalPixels = 0;
+  let hairSatSum = 0;
+  let hairSatCount = 0;
+
+  // Focus on the upper band (where hair should exist) to avoid skin/forehead diluting coverage.
+  const BAND_RATIO = 0.65;
+  const bandH = Math.max(2, Math.floor(SAMPLE * BAND_RATIO));
 
   for (let i = 0, p = 0; i < pixels.length; i += 4, p++) {
     const r = pixels[i];
@@ -150,20 +156,28 @@ const analyzeHairOnTop = (
       if (h < 0) h += 360;
     }
 
-    // Heuristics: hair tends to be dark; brown hair is warm hue; black hair is very low V.
-    const isBrown = h >= 10 && h <= 55 && s >= 0.12 && v <= 0.75;
-    const isVeryDark = v <= 0.25 && luma <= 0.28;
-    const isDarkAndSaturated = luma <= 0.42 && s >= 0.18;
+    const y = Math.floor(p / SAMPLE);
+    if (y >= bandH) continue;
 
-    const isHairPixel = isVeryDark || (isBrown && luma <= 0.55) || isDarkAndSaturated;
-    if (isHairPixel) hairPixels++;
+    // Spec: HUMAN if the TOP is largely covered by highly-saturated black/dark-brown hair.
+    // We treat "black hair" as very dark with some chroma (avoid gray shadows).
+    const isDeepBrown = h >= 10 && h <= 65 && s >= 0.18 && luma <= 0.58 && v <= 0.8;
+    const isSaturatedDark = luma <= 0.42 && s >= 0.24;
+    const isSaturatedBlack = v <= 0.23 && luma <= 0.28 && s >= 0.08;
+
+    const isHairPixel = isSaturatedBlack || isDeepBrown || isSaturatedDark;
+    if (isHairPixel) {
+      hairPixels++;
+      hairSatSum += s;
+      hairSatCount++;
+    }
     totalPixels++;
   }
 
   // Texture/edge check to reduce flat-dark false positives
   let edgeCount = 0;
   const EDGE_THRESHOLD = 0.12;
-  for (let y = 0; y < SAMPLE - 1; y++) {
+  for (let y = 0; y < bandH - 1; y++) {
     for (let x = 0; x < SAMPLE - 1; x++) {
       const idx = y * SAMPLE + x;
       const d = Math.abs(lumas[idx] - lumas[idx + 1]) + Math.abs(lumas[idx] - lumas[idx + SAMPLE]);
@@ -172,19 +186,21 @@ const analyzeHairOnTop = (
   }
 
   const hairCoverage = totalPixels > 0 ? hairPixels / totalPixels : 0;
-  const edgeRatio = edgeCount / Math.max(1, (SAMPLE - 1) * (SAMPLE - 1));
+  const edgeRatio = edgeCount / Math.max(1, (bandH - 1) * (SAMPLE - 1));
+  const avgHairSat = hairSatCount > 0 ? hairSatSum / hairSatCount : 0;
 
-  const HAIR_COVERAGE_MIN = 0.32;
-  const EDGE_RATIO_MIN = 0.05;
-  const isHuman = hairCoverage >= HAIR_COVERAGE_MIN && edgeRatio >= EDGE_RATIO_MIN;
+  const HAIR_COVERAGE_MIN = 0.28;
+  const EDGE_RATIO_MIN = 0.03;
+  const SAT_MIN = 0.14;
+  const isHuman = hairCoverage >= HAIR_COVERAGE_MIN && avgHairSat >= SAT_MIN && edgeRatio >= EDGE_RATIO_MIN;
 
   return {
     isHuman,
     hairCoverage,
     edgeRatio,
     reason: isHuman
-      ? `Hair on top detected (coverage ${(hairCoverage * 100).toFixed(0)}%, texture ${(edgeRatio * 100).toFixed(0)}%)`
-      : `No strong top-hair (coverage ${(hairCoverage * 100).toFixed(0)}%, texture ${(edgeRatio * 100).toFixed(0)}%)`
+      ? `Top hair detected (coverage ${(hairCoverage * 100).toFixed(0)}%, sat ${(avgHairSat * 100).toFixed(0)}%, texture ${(edgeRatio * 100).toFixed(0)}%)`
+      : `No strong top-hair (coverage ${(hairCoverage * 100).toFixed(0)}%, sat ${(avgHairSat * 100).toFixed(0)}%, texture ${(edgeRatio * 100).toFixed(0)}%)`
   };
 };
 
@@ -912,6 +928,21 @@ const App: React.FC = () => {
             const hairAnalysis = analyzeHairOnTop(video, { x, y, width, height });
 
             if (hairAnalysis.isHuman) {
+              // Ensure we never show/persist boxes over real humans.
+              const humanCanvasX = offsetX + (x / video.videoWidth) * drawWidth;
+              const humanCanvasY = offsetY + (y / video.videoHeight) * drawHeight;
+              const humanCanvasW = (width / video.videoWidth) * drawWidth;
+              const humanCanvasH = (height / video.videoHeight) * drawHeight;
+              const humanCenterX = humanCanvasX + humanCanvasW / 2;
+              const humanCenterY = humanCanvasY + humanCanvasH / 2;
+              const clearRadius = Math.max(24, Math.max(humanCanvasW, humanCanvasH) * 0.6);
+              const clearRadius2 = clearRadius * clearRadius;
+
+              detectedRegionsHistoryRef.current = detectedRegionsHistoryRef.current.filter((item) => {
+                const dx = item.region.headCenterX - humanCenterX;
+                const dy = item.region.headCenterY - humanCenterY;
+                return dx * dx + dy * dy > clearRadius2;
+              });
               return;
             }
 
