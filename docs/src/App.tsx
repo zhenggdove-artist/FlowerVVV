@@ -370,8 +370,8 @@ const App: React.FC = () => {
 
       console.log("🔧 Creating FaceDetector with WIDE-RANGE config (prefers small/far heads, falls back if needed)...");
       console.log("   - Model: blaze_face_full_range (captures small distant heads)");
-      console.log("   - minDetectionConfidence: 0.40 (higher sensitivity, statue filters handle false positives)");
-      console.log("   - minSuppressionThreshold: 0.25 (looser NMS to keep weak boxes)");
+      console.log("   - minDetectionConfidence: 0.32 (higher sensitivity, statue filters handle false positives)");
+      console.log("   - minSuppressionThreshold: 0.20 (looser NMS to keep weak boxes)");
 
       let detector: FaceDetector | null = null;
       try {
@@ -381,8 +381,8 @@ const App: React.FC = () => {
             delegate: "GPU"
           },
           runningMode: "VIDEO",
-          minDetectionConfidence: 0.4,
-          minSuppressionThreshold: 0.25
+          minDetectionConfidence: 0.32,
+          minSuppressionThreshold: 0.2
         });
         console.log("✅ FaceDetector created with FULL-RANGE model");
       } catch (err) {
@@ -393,8 +393,8 @@ const App: React.FC = () => {
             delegate: "GPU"
           },
           runningMode: "VIDEO",
-          minDetectionConfidence: 0.45,
-          minSuppressionThreshold: 0.3
+          minDetectionConfidence: 0.35,
+          minSuppressionThreshold: 0.25
         });
         console.log("✅ FaceDetector created with SHORT-RANGE fallback");
       }
@@ -628,9 +628,9 @@ const App: React.FC = () => {
             }
 
             // Filter 2: Reject detections that are too small (noise)
-            // For MediaPipe: minimum 1.5% of video width or 12 pixels (allow distant statues)
+            // For MediaPipe: minimum 1.2% of video width or 10 pixels (allow distant statues)
             const minFaceSize = DETECTION_ENGINE === 'MEDIAPIPE'
-              ? Math.max(12, video.videoWidth * 0.015)
+              ? Math.max(10, video.videoWidth * 0.012)
               : Math.max(8, video.videoWidth * 0.01);
             if (width < minFaceSize || height < minFaceSize) {
               console.log(`  ❌ FILTER 2 FAIL: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize.toFixed(0)})`);
@@ -638,8 +638,8 @@ const App: React.FC = () => {
             }
 
             // Filter 3: Reject detections with low confidence
-            // MediaPipe: Match relaxed minDetectionConfidence (0.40), BlazeFace: 0.20
-            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.4 : 0.2;
+            // MediaPipe: Match relaxed minDetectionConfidence (0.32), BlazeFace: 0.20
+            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.32 : 0.2;
             if (confidence < minConfidence) {
               console.log(`  ❌ FILTER 3 FAIL: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}%)`);
               return;
@@ -656,7 +656,7 @@ const App: React.FC = () => {
 
             // Filter 5: Position sanity check - reject detections at extreme edges
             // Faces at very edge of frame are often false positives
-            const edgeMargin = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.05 : 0; // 5% margin for MediaPipe
+            const edgeMargin = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.02 : 0; // 2% margin for MediaPipe
             const minX = video.videoWidth * edgeMargin;
             const maxX = video.videoWidth * (1 - edgeMargin);
             const minY = video.videoHeight * edgeMargin;
@@ -828,9 +828,9 @@ const App: React.FC = () => {
       }
     };
 
-    // Run detection every 150ms (faster response, still efficient)
+    // Run detection every 120ms (more responsive)
     detectFaces();
-    const intervalId = setInterval(detectFaces, 150);
+    const intervalId = setInterval(detectFaces, 120);
     detectionIntervalRef.current = intervalId as any;
 
     return () => {
