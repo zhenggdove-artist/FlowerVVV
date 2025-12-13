@@ -25,6 +25,72 @@ function calculateIoU(box1: any, box2: any): number {
   return intersectionArea / unionArea;
 }
 
+// Helper: Detect human skin tone (excludes humans from statue detection)
+function hasSkinTone(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): { hasSkin: boolean; skinPercentage: number } {
+  try {
+    const sampleX = Math.max(0, x + width * 0.25);
+    const sampleY = Math.max(0, y + height * 0.25);
+    const sampleW = Math.min(width * 0.5, ctx.canvas.width - sampleX);
+    const sampleH = Math.min(height * 0.5, ctx.canvas.height - sampleY);
+
+    if (sampleW <= 0 || sampleH <= 0) return { hasSkin: false, skinPercentage: 0 };
+
+    const imageData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
+    const data = imageData.data;
+
+    let skinPixels = 0;
+    let totalPixels = 0;
+
+    // Sample pixels
+    for (let i = 0; i < data.length; i += 16) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+
+      totalPixels++;
+
+      // Human skin tone detection (RGB ranges for various skin tones)
+      // Light to dark skin: R>G>B pattern with specific ratios
+      const isLightSkin = (r > 95 && g > 40 && b > 20) &&
+                         (r > g && g > b) &&
+                         (Math.abs(r - g) > 15) &&
+                         (r - b > 15);
+
+      const isMediumSkin = (r > 80 && g > 50 && b > 30) &&
+                          (r > g && g >= b) &&
+                          (r - g > 10);
+
+      const isDarkSkin = (r > 45 && g > 30 && b > 20) &&
+                        (r > g && g > b);
+
+      // Also check for pinkish/reddish tones (caucasian skin)
+      const isPinkishSkin = (r > 150 && g > 100 && b > 80) &&
+                           (r > g && r > b) &&
+                           (r - g < 50);
+
+      if (isLightSkin || isMediumSkin || isDarkSkin || isPinkishSkin) {
+        skinPixels++;
+      }
+    }
+
+    const skinPercentage = totalPixels > 0 ? skinPixels / totalPixels : 0;
+
+    // If > 20% of sampled pixels are skin tone → it's a human
+    return {
+      hasSkin: skinPercentage > 0.2,
+      skinPercentage
+    };
+  } catch (err) {
+    return { hasSkin: false, skinPercentage: 0 };
+  }
+}
+
 // Helper: Advanced statue detection - analyzes color and texture
 function analyzeStatueCharacteristics(
   ctx: CanvasRenderingContext2D,
@@ -32,8 +98,21 @@ function analyzeStatueCharacteristics(
   y: number,
   width: number,
   height: number
-): { isStatue: boolean; saturation: number; colorVariance: number; confidence: number } {
+): { isStatue: boolean; saturation: number; colorVariance: number; confidence: number; hasSkin: boolean } {
   try {
+    // FIRST: Check for human skin tone (immediate disqualification)
+    const skinCheck = hasSkinTone(ctx, x, y, width, height);
+    if (skinCheck.hasSkin) {
+      // Has skin tone → definitely human → NOT a statue
+      return {
+        isStatue: false,
+        saturation: 1.0,
+        colorVariance: 0,
+        confidence: 0,
+        hasSkin: true
+      };
+    }
+
     // Sample center region (avoid edges)
     const sampleX = Math.max(0, x + width * 0.25);
     const sampleY = Math.max(0, y + height * 0.25);
@@ -41,7 +120,7 @@ function analyzeStatueCharacteristics(
     const sampleH = Math.min(height * 0.5, ctx.canvas.height - sampleY);
 
     if (sampleW <= 0 || sampleH <= 0) {
-      return { isStatue: false, saturation: 0.5, colorVariance: 0.5, confidence: 0 };
+      return { isStatue: false, saturation: 0.5, colorVariance: 0.5, confidence: 0, hasSkin: false };
     }
 
     const imageData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
@@ -87,7 +166,7 @@ function analyzeStatueCharacteristics(
     }
 
     if (pixelCount === 0) {
-      return { isStatue: false, saturation: 0.5, colorVariance: 0.5, confidence: 0 };
+      return { isStatue: false, saturation: 0.5, colorVariance: 0.5, confidence: 0, hasSkin: false };
     }
 
     const avgSaturation = totalSaturation / pixelCount;
@@ -103,34 +182,33 @@ function analyzeStatueCharacteristics(
     // Calculate brightness variance
     const brightnessVariance = values.reduce((sum, v) => sum + Math.pow(v - avgValue, 2), 0) / values.length;
 
-    // STATUE DETECTION CRITERIA:
-    // 1. Low saturation (< 0.3) - monochrome surface
-    // 2. Low hue variance (< 400) - uniform color
-    // 3. Moderate brightness variance (< 0.05) - smooth surface texture
+    // STRICTER STATUE CRITERIA (to avoid false positives with humans):
+    // 1. VERY low saturation (< 0.22) - monochrome surface (stricter!)
+    // 2. Low hue variance (< 300) - uniform color (stricter!)
+    // 3. Low brightness variance (< 0.04) - smooth surface (stricter!)
 
-    const lowSaturation = avgSaturation < 0.3;
-    const uniformColor = hueVariance < 400;
-    const smoothSurface = brightnessVariance < 0.05;
+    const veryLowSaturation = avgSaturation < 0.22;  // More strict (was 0.3)
+    const veryUniformColor = hueVariance < 300;       // More strict (was 400)
+    const verySmoothSurface = brightnessVariance < 0.04; // More strict (was 0.05)
 
     // Calculate confidence score
     let confidence = 0;
-    if (lowSaturation) confidence += 0.4;
-    if (uniformColor) confidence += 0.3;
-    if (smoothSurface) confidence += 0.3;
+    if (veryLowSaturation) confidence += 0.5;
+    if (veryUniformColor) confidence += 0.3;
+    if (verySmoothSurface) confidence += 0.2;
 
-    // Decision: need at least 2 out of 3 criteria
-    const isStatue = (lowSaturation && uniformColor) ||
-                     (lowSaturation && smoothSurface) ||
-                     (uniformColor && smoothSurface);
+    // STRICT Decision: ALL 3 criteria must be met for statue
+    const isStatue = veryLowSaturation && veryUniformColor && verySmoothSurface;
 
     return {
       isStatue,
       saturation: avgSaturation,
       colorVariance: hueVariance,
-      confidence
+      confidence,
+      hasSkin: false
     };
   } catch (err) {
-    return { isStatue: false, saturation: 0.5, colorVariance: 0, confidence: 0 };
+    return { isStatue: false, saturation: 0.5, colorVariance: 0, confidence: 0, hasSkin: false };
   }
 }
 
@@ -243,6 +321,9 @@ const App: React.FC = () => {
   const detectionStableCountRef = useRef<number>(0);
   const autoCaptureFiredRef = useRef<boolean>(false);
   const detectionFrameCount = useRef<number>(0);
+
+  // Detection persistence: keep detections for 1.5 seconds even if temporarily lost
+  const detectionHistoryRef = useRef<Map<string, { region: FaceRegion; timestamp: number }>>(new Map());
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
@@ -474,10 +555,10 @@ const App: React.FC = () => {
             const confidence = face.probability ? face.probability[0] : 0.9;
             const detectionScale = face.scale || 1.0;
 
-            // Analyze statue characteristics (already filtered, but get details)
+            // Analyze statue characteristics (already filtered, but get details for logging)
             const statueAnalysis = analyzeStatueCharacteristics(tempCtx!, x, y, width, height);
 
-            console.log(`  Statue ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] conf=${confidence.toFixed(2)} scale=${detectionScale.toFixed(2)}x sat=${statueAnalysis.saturation.toFixed(2)} statueConf=${statueAnalysis.confidence.toFixed(2)}`);
+            console.log(`  ✓ Statue ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] conf=${confidence.toFixed(2)} scale=${detectionScale.toFixed(2)}x sat=${statueAnalysis.saturation.toFixed(3)} skin=${statueAnalysis.hasSkin ? 'YES⚠️' : 'NO✓'}`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
@@ -526,17 +607,21 @@ const App: React.FC = () => {
               headRadius = Math.max(canvasWidth, canvasHeight) * 0.6;
             }
 
-            // Draw STATUE detection circle (orange)
+            // Draw STATUE detection circle (orange, THIN DASHED)
             ctx.beginPath();
             ctx.arc(headCenterX, headCenterY, headRadius, 0, 2 * Math.PI);
-            ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)'; // Bright orange for statues
-            ctx.lineWidth = 3;
+            ctx.setLineDash([8, 4]); // Dashed line pattern: 8px dash, 4px gap
+            ctx.strokeStyle = 'rgba(255, 165, 0, 0.9)'; // Bright orange for statues
+            ctx.lineWidth = 1.5; // Thin line
             ctx.stroke();
+            ctx.setLineDash([]); // Reset to solid line
 
-            // Draw detection box (orange)
-            ctx.strokeStyle = 'rgba(255, 165, 0, 0.6)';
-            ctx.lineWidth = 2;
+            // Draw detection box (orange, THIN DASHED)
+            ctx.setLineDash([6, 3]); // Dashed line: 6px dash, 3px gap
+            ctx.strokeStyle = 'rgba(255, 165, 0, 0.7)';
+            ctx.lineWidth = 1; // Very thin
             ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
+            ctx.setLineDash([]); // Reset
 
             // Draw facial landmarks (if available)
             if (face.landmarks && face.landmarks.length >= 6) {
@@ -580,7 +665,29 @@ const App: React.FC = () => {
             });
           });
 
-          setDetectedHeads(headRegions);
+          // DETECTION PERSISTENCE: Keep detections for 1.5 seconds
+          const now = Date.now();
+          const PERSISTENCE_TIME = 1500; // 1.5 seconds
+
+          // Add new detections to history
+          headRegions.forEach((region, index) => {
+            const key = `statue_${index}_${Math.floor(region.centerX * 1000)}_${Math.floor(region.centerY * 1000)}`;
+            detectionHistoryRef.current.set(key, { region, timestamp: now });
+          });
+
+          // Remove expired detections (older than 1.5 seconds)
+          const keysToDelete: string[] = [];
+          detectionHistoryRef.current.forEach((value, key) => {
+            if (now - value.timestamp > PERSISTENCE_TIME) {
+              keysToDelete.push(key);
+            }
+          });
+          keysToDelete.forEach(key => detectionHistoryRef.current.delete(key));
+
+          // Get all persisted detections (including recently expired but still within window)
+          const persistedRegions = Array.from(detectionHistoryRef.current.values()).map(v => v.region);
+
+          setDetectedHeads(persistedRegions);
 
           // AUTO-CAPTURE LOGIC: If STATUES detected for 2 consecutive frames, auto-capture
           if (headRegions.length > 0) {
