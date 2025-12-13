@@ -179,7 +179,7 @@ const analyzeStatueMaterial = (
   let hairSamples = 0;
 
   const stride = Math.max(1, Math.floor(Math.min(width, height) / 24));
-  const hairRegionY = Math.max(1, Math.floor(height * 0.4)); // top 40% area for hair check
+  const hairRegionY = Math.max(1, Math.floor(height * 0.45)); // top 45% area for hair check
 
   for (let y = 0; y < height; y += stride) {
     for (let x = 0; x < width; x += stride) {
@@ -217,7 +217,7 @@ const analyzeStatueMaterial = (
 
       // Hair heuristic: dense dark band near top of head = likely real human hair
       if (y <= hairRegionY) {
-        if (luma < 110) {
+        if (luma < 120) {
           hairDarkCount++;
         }
         hairSamples++;
@@ -249,8 +249,8 @@ const analyzeStatueMaterial = (
 
   console.log(`    dYZ" Material Analysis: sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%, tex=${(edgeDensity * 100).toFixed(1)}%, lumaStd=${lumaStd.toFixed(1)}, hairDark=${(hairDarkRatio * 100).toFixed(1)}%`);
 
-  // Hair band heuristic: dark band on top => likely human hair
-  const hairLooksHuman = hairDarkRatio > 0.12; // very sensitive to large dark top area
+  // Hair-only heuristic: if large dark band on top -> human, otherwise treat as statue
+  const hairLooksHuman = hairDarkRatio > 0.1; // sensitive
 
   let isStatue = true;
   let reason = 'No human hair signature detected';
@@ -258,9 +258,6 @@ const analyzeStatueMaterial = (
   if (hairLooksHuman) {
     isStatue = false;
     reason = `Human hair detected (dark top ${(hairDarkRatio * 100).toFixed(1)}%)`;
-  } else if (skinToneRatio > 0.45) {
-    isStatue = false;
-    reason = `Human skin detected (${(skinToneRatio * 100).toFixed(1)}%)`;
   }
 
   const signature = buildRegionSignature(tempCanvas);
@@ -622,26 +619,26 @@ const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; times
             // ============================================
 
             // Filter 1: Reject detections that are too large (likely false positives)
-            // MediaPipe more strict: max 80% of video dimension (allow close-up statues)
-            const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * (DETECTION_ENGINE === 'MEDIAPIPE' ? 0.8 : 0.8);
+            // Allow large faces (close-up statues)
+            const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * 0.95;
             if (width > maxFaceSize || height > maxFaceSize) {
               console.log(`  ❌ FILTER 1 FAIL: Face ${index + 1} too large (${width.toFixed(0)}x${height.toFixed(0)} exceeds ${maxFaceSize.toFixed(0)})`);
               return;
             }
 
             // Filter 2: Reject detections that are too small (noise)
-            // For MediaPipe: minimum 0.8% of video width or 6 pixels (allow distant statues)
+            // For MediaPipe: minimum 0.6% of video width or 4 pixels (allow distant statues)
             const minFaceSize = DETECTION_ENGINE === 'MEDIAPIPE'
-              ? Math.max(6, video.videoWidth * 0.008)
-              : Math.max(5, video.videoWidth * 0.006);
+              ? Math.max(4, video.videoWidth * 0.006)
+              : Math.max(4, video.videoWidth * 0.005);
             if (width < minFaceSize || height < minFaceSize) {
               console.log(`  ❌ FILTER 2 FAIL: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize.toFixed(0)})`);
               return;
             }
 
             // Filter 3: Reject detections with low confidence
-            // MediaPipe: Match relaxed minDetectionConfidence (0.22), BlazeFace: 0.18
-            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.22 : 0.18;
+            // MediaPipe: Match relaxed minDetectionConfidence (0.2), BlazeFace: 0.18
+            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.2 : 0.18;
             if (confidence < minConfidence) {
               console.log(`  ❌ FILTER 3 FAIL: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}%)`);
               return;
