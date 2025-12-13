@@ -187,7 +187,7 @@ const analyzeStatueMaterial = (
   }
 
   // Edge case: medium saturation but no skin = possible colored statue
-  if (avgSaturation < 50 && skinToneRatio < 0.3) {
+  if (avgSaturation < 50 && skinToneRatio < 0.015) {
     return {
       isStatue: true,
       reason: 'Colored statue (low saturation, no skin)',
