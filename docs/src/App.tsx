@@ -177,7 +177,7 @@ const analyzeStatueMaterial = (
     };
   }
 
-  if (skinToneRatio > 0.25) {
+  if (skinToneRatio > 0.015) {
     return {
       isStatue: false,
       reason: `Human skin detected (${(skinToneRatio * 100).toFixed(1)}%)`,
@@ -187,7 +187,7 @@ const analyzeStatueMaterial = (
   }
 
   // Edge case: medium saturation but no skin = possible colored statue
-  if (avgSaturation < 50 && skinToneRatio < 0.015) {
+  if (avgSaturation < 80 && skinToneRatio < 0.015) {
     return {
       isStatue: true,
       reason: 'Colored statue (low saturation, no skin)',
