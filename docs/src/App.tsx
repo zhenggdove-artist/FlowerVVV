@@ -816,24 +816,10 @@ const App: React.FC = () => {
 
           setDetectedHeads(headRegions);
 
-          // AUTO-CAPTURE LOGIC: If faces detected for 2 consecutive frames, auto-capture
+          // Manual capture only: show status but do not auto-trigger, so VICI stays clickable
           if (headRegions.length > 0) {
-            detectionStableCountRef.current++;
-
-            // After 2 stable detections (about 400ms), auto-trigger capture - FAST!
-            if (detectionStableCountRef.current >= 2 && !autoCaptureFiredRef.current) {
-              console.log("AUTO-CAPTURE: Faces detected for 2 frames - triggering FAST capture!");
-              autoCaptureFiredRef.current = true;
-
-              // Trigger capture immediately
-              setTimeout(() => {
-                handleInteraction();
-              }, 50);
-            }
-
-            setStatusText(`${headRegions.length} STATUE(S) DETECTED - CAPTURING...`);
+            setStatusText(`${headRegions.length} STATUE(S) DETECTED - READY`);
           } else {
-            detectionStableCountRef.current = 0;
             setStatusText("Point camera at STATUES");
           }
 
