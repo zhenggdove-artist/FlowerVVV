@@ -2,7 +2,8 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import DreamOverlay from './components/DreamOverlay.tsx';
 import PlantGrowth from './components/PlantGrowth.tsx';
 import { GameState, AnalysisResult, FaceRegion, ColorScheme } from './types.ts';
-import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
+import * as blazeface from '@tensorflow-models/blazeface';
+import '@tensorflow/tfjs';
 
 // Color schemes pool for random selection (紅橙黃綠藍靛紫)
 const colorSchemes: ColorScheme[] = [
@@ -67,17 +68,14 @@ const getRandomColorScheme = (): ColorScheme => {
 
 const App: React.FC = () => {
   console.log("###################################################");
-  console.log("APP.TSX: MEDIAPIPE FACE DETECTION - FULL RANGE MODE!");
+  console.log("APP.TSX: BLAZEFACE - AGGRESSIVE DETECTION MODE!");
   console.log("###################################################");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-  const faceDetectorRef = useRef<FaceDetector | null>(null);
+  const faceDetectorRef = useRef<blazeface.BlazeFaceModel | null>(null);
   const detectionIntervalRef = useRef<number | null>(null);
-
-  // Store latest MediaPipe detection results (callback-based)
-  const latestDetectionResultsRef = useRef<any>(null);
 
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -122,43 +120,31 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Initialize MediaPipe Face Detection
+  // Initialize BlazeFace with AGGRESSIVE settings for maximum detection
   useEffect(() => {
     let cancelled = false;
 
     const initDetector = async () => {
       try {
-        console.log("Loading MediaPipe FaceDetector...");
+        console.log("Loading BlazeFace with AGGRESSIVE settings...");
         setStatusText("LOADING DETECTOR...");
 
-        // Load MediaPipe Vision FilesetResolver
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
-        );
-
-        if (cancelled) return;
-
-        // Create FaceDetector with optimized settings
-        const detector = await FaceDetector.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-            delegate: "GPU"
-          },
-          runningMode: "VIDEO",
-          minDetectionConfidence: 0.3,  // Lower for better distant detection
-          minSuppressionThreshold: 0.3
+        // AGGRESSIVE BlazeFace configuration for maximum detection
+        const blazeModel = await blazeface.load({
+          maxFaces: 100,          // Maximum possible faces
+          iouThreshold: 0.1,      // Very low = detect more overlapping faces
+          scoreThreshold: 0.3     // Very low = detect more faces (even uncertain ones)
         });
 
         if (cancelled) return;
 
-        faceDetectorRef.current = detector;
+        faceDetectorRef.current = blazeModel;
         setIsDetectorReady(true);
         setStatusText("READY - Point camera at faces");
-        console.log("MediaPipe FaceDetector loaded successfully!");
+        console.log("BlazeFace loaded with AGGRESSIVE settings!");
       } catch (err) {
-        console.error("Failed to initialize MediaPipe detector:", err);
-        console.error("Error details:", err);
-        setStatusText("DETECTOR ERROR - Check console");
+        console.error("Failed to initialize BlazeFace:", err);
+        setStatusText("DETECTOR ERROR");
         setGameState(GameState.ERROR);
       }
     };
@@ -244,18 +230,10 @@ const App: React.FC = () => {
       }
 
       try {
-        // Run MediaPipe Face Detection (VIDEO mode)
-        // MediaPipe uses timestamp-based detection for video streams
-        const timestamp = performance.now();
-        const detectionResult = faceDetector.detectForVideo(video, timestamp);
+        // Run BlazeFace detection
+        const faceDetections = await faceDetector.estimateFaces(video, false);
 
-        // Store results in ref for potential access
-        latestDetectionResultsRef.current = detectionResult;
-
-        // Extract face detections from MediaPipe result
-        const faceDetections = detectionResult.detections || [];
-
-        console.log(`🔍 MediaPipe detected ${faceDetections.length} faces in current frame`);
+        console.log(`🔍 BlazeFace detected ${faceDetections.length} faces in current frame`);
 
         // Clear previous drawings
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -291,20 +269,13 @@ const App: React.FC = () => {
             index: number;
           }> = [];
 
-          // Process ALL MediaPipe detections (supports multiple faces)
-          faceDetections.forEach((detection: any, index: number) => {
-            // MediaPipe returns boundingBox with originX, originY, width, height
-            // All coordinates are normalized (0-1), need to convert to video pixels
-            const bbox = detection.boundingBox;
-            const x = bbox.originX * video.videoWidth;
-            const y = bbox.originY * video.videoHeight;
-            const width = bbox.width * video.videoWidth;
-            const height = bbox.height * video.videoHeight;
-
-            // Get confidence score from categories
-            const confidence = detection.categories && detection.categories.length > 0
-              ? detection.categories[0].score
-              : 0.9;
+          // Process ALL BlazeFace detections (supports multiple faces)
+          faceDetections.forEach((face: any, index: number) => {
+            const [x, y] = face.topLeft;
+            const [x2, y2] = face.bottomRight;
+            const width = x2 - x;
+            const height = y2 - y;
+            const confidence = face.probability ? face.probability[0] : 0.9;
 
             console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] confidence=${confidence.toFixed(2)}`);
 
@@ -326,8 +297,8 @@ const App: React.FC = () => {
             }
 
             // Filter 3: Reject detections with very low confidence
-            // Lower threshold for distant faces (MediaPipe Full Range model)
-            if (confidence < 0.35) {
+            // AGGRESSIVE: Match BlazeFace scoreThreshold (0.3)
+            if (confidence < 0.3) {
               console.log(`  ❌ REJECTED: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}%)`);
               return;
             }
