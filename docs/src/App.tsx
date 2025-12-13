@@ -14,8 +14,8 @@ type DetectionEngine = 'BLAZEFACE' | 'MEDIAPIPE' | 'HYBRID';
 const DETECTION_ENGINE: DetectionEngine = 'HYBRID';
 
 const INTERACTION_CONFIDENCE_MIN = 0.4; // 40%
+const DISPLAY_CONFIDENCE_MIN = 0.15;
 const BOX_PERSIST_MS = 700;
-const AUTO_CAPTURE_MS = 700;
 // ============================================
 
 // Color schemes pool for random selection (紅橙黃綠藍靛紫)
@@ -85,6 +85,19 @@ const getRandomColorScheme = (): ColorScheme => {
 
 type HairCheckResult = { isHuman: boolean; reason: string; hairCoverage: number; edgeRatio: number };
 
+const HAIR_SAMPLE = 56;
+let hairSampleCanvas: HTMLCanvasElement | null = null;
+let hairSampleCtx: CanvasRenderingContext2D | null = null;
+const getHairSampleCtx = (): CanvasRenderingContext2D | null => {
+  if (hairSampleCtx) return hairSampleCtx;
+  if (typeof document === 'undefined') return null;
+  hairSampleCanvas = document.createElement('canvas');
+  hairSampleCanvas.width = HAIR_SAMPLE;
+  hairSampleCanvas.height = HAIR_SAMPLE;
+  hairSampleCtx = hairSampleCanvas.getContext('2d', { willReadFrequently: true });
+  return hairSampleCtx;
+};
+
 /**
  * If the TOP of the head is largely covered by dark (black/brown) hair, treat as HUMAN.
  * Otherwise we treat detected face/head as STATUE.
@@ -101,11 +114,8 @@ const analyzeHairOnTop = (
   const roiY = clamp(Math.floor(bbox.y - bbox.height * 0.35), 0, video.videoHeight - 1);
   const roiH = clamp(Math.floor(bbox.height * 0.6), 1, video.videoHeight - roiY);
 
-  const SAMPLE = 56;
-  const canvas = document.createElement('canvas');
-  canvas.width = SAMPLE;
-  canvas.height = SAMPLE;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const SAMPLE = HAIR_SAMPLE;
+  const ctx = getHairSampleCtx();
   if (!ctx) return { isHuman: false, reason: 'Canvas error', hairCoverage: 0, edgeRatio: 0 };
 
   ctx.drawImage(video, roiX, roiY, roiW, roiH, 0, 0, SAMPLE, SAMPLE);
@@ -309,11 +319,6 @@ const analyzeStatueMaterial = (
 };
 
 const App: React.FC = () => {
-  console.log("###################################################");
-  console.log(`APP.TSX: DUAL ENGINE MODE - ACTIVE: ${DETECTION_ENGINE}`);
-  console.log(`🗿 STATUE DETECTION: ENABLED (rejecting human faces)`);
-  console.log("###################################################");
-
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -323,6 +328,9 @@ const App: React.FC = () => {
     const mediapipeDetectorRef = useRef<FaceDetector | null>(null);
     const cocoDetectorRef = useRef<cocoSsd.ObjectDetection | null>(null);
     const detectionIntervalRef = useRef<number | null>(null);
+    const cocoLoadingPromiseRef = useRef<Promise<cocoSsd.ObjectDetection | null> | null>(null);
+    const cocoLoadFailedRef = useRef<boolean>(false);
+    const isDetectingRef = useRef<boolean>(false);
 
     // COCO-SSD throttling + cached head regions (derived from "person" boxes)
     const lastPersonDetectAtRef = useRef<number>(0);
@@ -342,8 +350,6 @@ const App: React.FC = () => {
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
 
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
-  const detectionStableCountRef = useRef<number>(0);
-  const autoCaptureFiredRef = useRef<boolean>(false);
 
   // For detection box persistence (0.7s minimum display per box)
   const detectedRegionsHistoryRef = useRef<Array<{
@@ -366,7 +372,28 @@ const App: React.FC = () => {
   const [currentColorScheme, setCurrentColorScheme] = useState<ColorScheme>(colorSchemes[0]); // Start with pink
   const [currentColorIndex, setCurrentColorIndex] = useState<number>(0);
 
-  console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "heads:", detectedHeads.length, "clicks:", viciClickCount);
+  const ensureCocoLoaded = useCallback(async (): Promise<cocoSsd.ObjectDetection | null> => {
+    if (cocoDetectorRef.current) return cocoDetectorRef.current;
+    if (cocoLoadFailedRef.current) return null;
+    if (cocoLoadingPromiseRef.current) return cocoLoadingPromiseRef.current;
+
+    const promise = (async () => {
+      try {
+        const model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+        cocoDetectorRef.current = model;
+        return model;
+      } catch (err) {
+        cocoLoadFailedRef.current = true;
+        console.warn("COCO-SSD load failed (disabling person fallback):", err);
+        return null;
+      } finally {
+        cocoLoadingPromiseRef.current = null;
+      }
+    })();
+
+    cocoLoadingPromiseRef.current = promise;
+    return promise;
+  }, []);
 
   // Handle Resize
   useEffect(() => {
@@ -386,7 +413,7 @@ const App: React.FC = () => {
         const blazeModel = await blazeface.load({
           maxFaces: 100,
           iouThreshold: 0.1,
-          scoreThreshold: 0.25
+          scoreThreshold: 0.15
         });
 
       if (cancelled) return;
@@ -410,7 +437,7 @@ const App: React.FC = () => {
 
       console.log("🔧 Creating FaceDetector with OPTIMIZED config...");
       console.log("   - Model: blaze_face_short_range");
-      console.log("   - minDetectionConfidence: 0.35 (balanced)");
+      console.log("   - minDetectionConfidence: 0.2 (high recall)");
       console.log("   - minSuppressionThreshold: 0.3 (less strict NMS)");
 
       const createDetector = async (delegate: 'GPU' | 'CPU') =>
@@ -421,7 +448,7 @@ const App: React.FC = () => {
             delegate
           },
           runningMode: "VIDEO",
-          minDetectionConfidence: 0.35,
+          minDetectionConfidence: 0.2,
           minSuppressionThreshold: 0.3
         });
 
@@ -438,19 +465,6 @@ const App: React.FC = () => {
 
       mediapipeDetectorRef.current = detector;
       console.log("✅ MediaPipe loaded successfully!");
-      return true;
-    };
-
-    const initCoco = async () => {
-      console.log("🟠 Initializing COCO-SSD person detector...");
-      setStatusText("LOADING PERSON DETECTOR...");
-
-      const model = await cocoSsd.load({ base: 'mobilenet_v2' });
-
-      if (cancelled) return false;
-
-      cocoDetectorRef.current = model;
-      console.log("✅ COCO-SSD loaded successfully!");
       return true;
     };
 
@@ -494,15 +508,9 @@ const App: React.FC = () => {
           ok = Boolean(mediapipeOk || blazeOk);
         }
 
-        try {
-          await initCoco();
-        } catch (err) {
-          console.warn("COCO-SSD init failed (continuing without person fallback):", err);
-        }
-
         if (cancelled) return;
 
-        if (!ok && !cocoDetectorRef.current) {
+        if (!ok) {
           throw new Error("No detection model initialized");
         }
 
@@ -546,7 +554,7 @@ const App: React.FC = () => {
             console.log("Video loaded - auto-starting detection immediately");
             // Mark as initialized immediately to start detection
             setIsInitialized(true);
-            console.log("Detection enabled - auto-capture will trigger when statues detected");
+            console.log("Detection enabled");
           };
         }
       } catch (err) {
@@ -583,6 +591,7 @@ const App: React.FC = () => {
     console.log(`Starting face detection with ${DETECTION_ENGINE} (200ms interval)...`);
 
     const detectFaces = async () => {
+      if (isDetectingRef.current) return;
       const video = videoRef.current;
       const canvas = overlayCanvasRef.current;
 
@@ -601,6 +610,7 @@ const App: React.FC = () => {
         return;
       }
 
+      isDetectingRef.current = true;
       try {
         // ============================================
         // DUAL ENGINE DETECTION
@@ -642,7 +652,7 @@ const App: React.FC = () => {
             });
 
             faceDetections.push(...converted);
-            return converted.length > 0;
+            return converted.some((d: any) => (d.probability?.[0] ?? 0) >= DISPLAY_CONFIDENCE_MIN);
           } catch (err) {
             console.warn("MediaPipe detect() failed:", err);
             return false;
@@ -650,8 +660,8 @@ const App: React.FC = () => {
         };
 
         if (DETECTION_ENGINE === 'HYBRID') {
-          runMediaPipe();
-          await runBlazeFace();
+          const mediapipeOk = runMediaPipe();
+          if (!mediapipeOk) await runBlazeFace();
         } else if (DETECTION_ENGINE === 'MEDIAPIPE') {
           const mediapipeOk = runMediaPipe();
           if (!mediapipeOk) await runBlazeFace();
@@ -735,16 +745,16 @@ const App: React.FC = () => {
         // ============================================
         // COCO-SSD PERSON DETECTION (HEAD FALLBACK)
         const now = Date.now();
-        const coco = cocoDetectorRef.current;
         const PERSON_REFRESH_MS = 400;
         const PERSON_MIN_SCORE = 0.25;
 
         const shouldUsePersonFallback = faceDetections.length === 0;
 
         if (shouldUsePersonFallback) {
+          const coco = cocoDetectorRef.current;
           if (coco && now - lastPersonDetectAtRef.current > PERSON_REFRESH_MS) {
             try {
-              const detections = await coco.detect(video, 20, PERSON_MIN_SCORE);
+              const detections = await coco.detect(video, 5, PERSON_MIN_SCORE);
               const personHeads = (detections || [])
                 .filter((d: cocoSsd.DetectedObject) => d.class === 'person' && d.score >= PERSON_MIN_SCORE)
                 .map((d: cocoSsd.DetectedObject) => {
@@ -832,8 +842,6 @@ const App: React.FC = () => {
               const source = face._source || 'UNKNOWN';
               const isPersonHead = source === 'COCO_PERSON';
 
-            console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] confidence=${confidence.toFixed(2)}`);
-
             // ============================================
             // ENHANCED 6-LAYER FILTER SYSTEM (MediaPipe Optimized)
             // ============================================
@@ -841,7 +849,6 @@ const App: React.FC = () => {
               // Filter 1: Reject detections that are too large (likely false positives)
               const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * (isPersonHead ? 0.95 : 0.9);
             if (width > maxFaceSize || height > maxFaceSize) {
-              console.log(`  ❌ FILTER 1 FAIL: Face ${index + 1} too large (${width.toFixed(0)}x${height.toFixed(0)} exceeds ${maxFaceSize.toFixed(0)})`);
               return;
             }
 
@@ -850,14 +857,12 @@ const App: React.FC = () => {
                 ? Math.max(18, video.videoWidth * 0.02)
                 : Math.max(12, video.videoWidth * 0.015);
             if (width < minFaceSize || height < minFaceSize) {
-              console.log(`  ❌ FILTER 2 FAIL: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize.toFixed(0)})`);
               return;
             }
 
               // Filter 3: Reject detections with very low confidence
-              const minConfidence = INTERACTION_CONFIDENCE_MIN;
+              const minConfidence = DISPLAY_CONFIDENCE_MIN;
             if (confidence < minConfidence) {
-              console.log(`  ❌ FILTER 3 FAIL: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}%)`);
               return;
             }
 
@@ -866,7 +871,6 @@ const App: React.FC = () => {
             const aspectRatio = Math.max(width, height) / Math.min(width, height);
               const maxAspectRatio = isPersonHead ? 3.5 : 2.8;
             if (aspectRatio > maxAspectRatio) {
-              console.log(`  ❌ FILTER 4 FAIL: Face ${index + 1} invalid aspect ratio (${aspectRatio.toFixed(2)} > ${maxAspectRatio})`);
               return;
             }
 
@@ -882,7 +886,6 @@ const App: React.FC = () => {
             const centerY = y + height / 2;
 
             if (centerX < minX || centerX > maxX || centerY < minY || centerY > maxY) {
-              console.log(`  ❌ FILTER 5 FAIL: Face ${index + 1} too close to edge (center: ${centerX.toFixed(0)}, ${centerY.toFixed(0)})`);
               return;
             }
 
@@ -893,11 +896,8 @@ const App: React.FC = () => {
             const sizeVariance = sizeDiff / avgSize;
 
             if (!isPersonHead && sizeVariance > 0.75) {
-              console.log(`  ❌ FILTER 6 FAIL: Face ${index + 1} inconsistent dimensions (variance: ${(sizeVariance * 100).toFixed(0)}%)`);
               return;
             }
-
-            console.log(`  ✅ PASSED geometric filters 1-6`);
 
             // ============================================
             // Filter 7: TOP-HAIR HUMAN REJECTION (CRITICAL)
@@ -905,15 +905,9 @@ const App: React.FC = () => {
             // Analyze the region to determine if it's a statue or human
             const hairAnalysis = analyzeHairOnTop(video, { x, y, width, height });
 
-            console.log(`    Hair check: ${hairAnalysis.isHuman ? 'HUMAN' : 'STATUE'}`);
-            console.log(`    Reason: ${hairAnalysis.reason}`);
-
             if (hairAnalysis.isHuman) {
-              console.log(`  FILTER 7 FAIL: REJECTED - ${hairAnalysis.reason}`);
               return;
             }
-
-            console.log(`  FINAL ACCEPTANCE: Face ${index + 1} treated as STATUE (hair check passed)`);
 
             /*
             console.log(`    🗿 Statue check: ${materialAnalysis.isStatue ? '✅ IS STATUE' : '❌ IS HUMAN'}`);
@@ -993,38 +987,40 @@ const App: React.FC = () => {
             });
 
             const regionsToDisplay = Array.from(regionsByKey.values());
-            const actionableRegions = regionsToDisplay.filter(r => r.confidence >= INTERACTION_CONFIDENCE_MIN);
+            const displayRegions = regionsToDisplay.filter(r => r.confidence >= DISPLAY_CONFIDENCE_MIN);
+            const actionableRegions = displayRegions.filter(r => r.confidence >= INTERACTION_CONFIDENCE_MIN);
 
-            if (detectedRegionsForDisplay.length === 0 && actionableRegions.length > 0) {
-            console.log(`⏱️ Showing ${regionsToDisplay.length} persistent detection boxes from recent history`);
-          }
+            // Draw all regions to display (orange dashed; dim if below interaction threshold)
+            displayRegions.forEach((region) => {
+              const isActionable = region.confidence >= INTERACTION_CONFIDENCE_MIN;
+              const boxAlpha = isActionable ? 0.85 : 0.35;
+              const circleAlpha = isActionable ? 0.55 : 0.25;
+              const textAlpha = isActionable ? 0.95 : 0.6;
 
-            // Draw all regions to display
-            actionableRegions.forEach((region) => {
-            ctx.save();
-            ctx.setLineDash([8, 6]);
+              ctx.save();
+              ctx.setLineDash([8, 6]);
 
-            // Draw circle
-            ctx.beginPath();
-            ctx.arc(region.headCenterX, region.headCenterY, region.headRadius, 0, 2 * Math.PI);
-            ctx.strokeStyle = 'rgba(255, 165, 0, 0.55)';
-            ctx.lineWidth = 2;
-            ctx.stroke();
+              // Draw circle
+              ctx.beginPath();
+              ctx.arc(region.headCenterX, region.headCenterY, region.headRadius, 0, 2 * Math.PI);
+              ctx.strokeStyle = `rgba(255, 165, 0, ${circleAlpha})`;
+              ctx.lineWidth = 2;
+              ctx.stroke();
 
-            // Draw detection box (orange dashed)
-            ctx.strokeStyle = 'rgba(255, 165, 0, 0.85)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(region.canvasX, region.canvasY, region.canvasWidth, region.canvasHeight);
+              // Draw detection box (orange dashed)
+              ctx.strokeStyle = `rgba(255, 165, 0, ${boxAlpha})`;
+              ctx.lineWidth = 2;
+              ctx.strokeRect(region.canvasX, region.canvasY, region.canvasWidth, region.canvasHeight);
 
-            // Draw face number and confidence
-            ctx.fillStyle = 'rgba(255, 165, 0, 0.95)';
-            ctx.font = 'bold 16px monospace';
-            ctx.fillText(`#${region.index + 1}`, region.canvasX + 5, region.canvasY + 20);
-            ctx.font = '12px monospace';
-            ctx.fillText(`${(region.confidence * 100).toFixed(0)}%`, region.canvasX + 5, region.canvasY + 38);
+              // Draw face number and confidence
+              ctx.fillStyle = `rgba(255, 165, 0, ${textAlpha})`;
+              ctx.font = 'bold 16px monospace';
+              ctx.fillText(`#${region.index + 1}`, region.canvasX + 5, region.canvasY + 20);
+              ctx.font = '12px monospace';
+              ctx.fillText(`${(region.confidence * 100).toFixed(0)}%`, region.canvasX + 5, region.canvasY + 38);
 
-            ctx.restore();
-          });
+              ctx.restore();
+            });
 
             const headsForInteraction: FaceRegion[] = actionableRegions.map((region) => {
               const growthCenterX = region.headCenterX;
@@ -1045,29 +1041,18 @@ const App: React.FC = () => {
             detectedHeadsRef.current = headsForInteraction;
             setDetectedHeads(headsForInteraction);
 
-            // AUTO-CAPTURE LOGIC: Trigger after a short dwell time
             if (headsForInteraction.length > 0) {
-              detectionStableCountRef.current++;
-
-              const requiredFrames = Math.ceil(AUTO_CAPTURE_MS / 200);
-              if (detectionStableCountRef.current >= requiredFrames && !autoCaptureFiredRef.current) {
-                console.log("AUTO-CAPTURE: Target stable - triggering capture!");
-                autoCaptureFiredRef.current = true;
-
-                // Trigger capture immediately
-                setTimeout(() => {
-                  handleInteraction();
-                }, 50);
-              }
-
               setStatusText(`${headsForInteraction.length} TARGET(S) DETECTED`);
+            } else if (displayRegions.length > 0) {
+              setStatusText("LOW CONFIDENCE - MOVE CLOSER");
             } else {
-              detectionStableCountRef.current = 0;
               setStatusText("Point camera at TARGET");
             }
 
       } catch (err) {
         console.error("Detection error:", err);
+      } finally {
+        isDetectingRef.current = false;
       }
     };
 
@@ -1112,6 +1097,14 @@ const App: React.FC = () => {
 
         // Require at least one visible/actionable detection box (confidence >= 40%)
           if (heads.length === 0) {
+            if (!cocoDetectorRef.current && !cocoLoadFailedRef.current) {
+              setStatusText("LOADING BODY DETECTOR...");
+              void ensureCocoLoaded().then(() => {
+                setStatusText("Point camera at TARGET");
+              });
+              return;
+            }
+
             setStatusText("NO TARGET DETECTED");
             setTimeout(() => setStatusText("Point camera at TARGET"), 1200);
             return;
@@ -1167,8 +1160,6 @@ const App: React.FC = () => {
     setDetectedHeads([]);
     detectedHeadsRef.current = [];
     setStatusText("Point camera at TARGET");
-    detectionStableCountRef.current = 0;
-    autoCaptureFiredRef.current = false;
   };
 
   return (
