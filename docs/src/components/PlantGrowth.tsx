@@ -341,10 +341,14 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
   // --- SPAWN LOGIC ---
   useEffect(() => {
     if (growthTrigger > 0 && active) {
+      console.log('🌱 Growth triggered! Current color scheme:', {
+        flower: colorScheme.flower,
+        trigger: growthTrigger
+      });
       spawnGrowth(40); // Increased burst size
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [growthTrigger, active]);
+  }, [growthTrigger, active, colorScheme]);
 
   const spawnGrowth = (count: number) => {
     if (!dataRef.current) return;
@@ -405,8 +409,16 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
             activeHeads.push(i); // Track this head
             spawned++;
+
+            // DEBUG: Log first spawned plant
+            if (spawned === 1) {
+              console.log('🌿 First plant spawned with Z:', baseZ, 'at position:', x, y);
+            }
         }
     }
+
+    console.log(`✅ Spawned ${spawned} plants with Z layer: ${baseZ.toFixed(2)}`);
+
     if (geometryRef.current) {
       geometryRef.current.attributes.aType.needsUpdate = true;
       geometryRef.current.attributes.color.needsUpdate = true;
@@ -422,6 +434,21 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
      const particleCount = type === 3 ? 8 : 3; // More for flowers, less for vines
      const start = Math.floor(Math.random() * MAX_PARTICLES);
 
+     // Add slight random variation to colors (±15%)
+     const variation = 0.15;
+     const randomize = (value: number) =>
+       Math.max(0, Math.min(1, value + (Math.random() - 0.5) * variation));
+
+     // DEBUG: Log flower color when spawning
+     if (type === 3) {
+       console.log('🌸 Spawning flower with color:', {
+         r: colorScheme.flower.r,
+         g: colorScheme.flower.g,
+         b: colorScheme.flower.b,
+         z: z
+       });
+     }
+
      for (let j = 0; j < particleCount; j++) {
          const idx = (start + j) % MAX_PARTICLES;
          if (types[idx] === 0) {
@@ -430,11 +457,6 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
              positions[idx * 3 + 1] = y + (Math.random() - 0.5) * 2;
              positions[idx * 3 + 2] = z; // Use the Z from parent
              life[idx] = -1;
-
-             // Add slight random variation to colors (±15%)
-             const variation = 0.15;
-             const randomize = (value: number) =>
-               Math.max(0, Math.min(1, value + (Math.random() - 0.5) * variation));
 
              if (type === 2) { // VINE BODY
                 colors[idx * 3] = randomize(colorScheme.vine.r);
