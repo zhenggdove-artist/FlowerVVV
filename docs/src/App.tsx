@@ -5,6 +5,56 @@ import { GameState, AnalysisResult, FaceRegion, ColorScheme } from './types.ts';
 import * as blazeface from '@tensorflow-models/blazeface';
 import '@tensorflow/tfjs';
 
+// Helper: Calculate IoU (Intersection over Union) between two bounding boxes
+function calculateIoU(box1: any, box2: any): number {
+  const [x1, y1] = box1.topLeft;
+  const [x1_2, y1_2] = box1.bottomRight;
+  const [x2, y2] = box2.topLeft;
+  const [x2_2, y2_2] = box2.bottomRight;
+
+  const xA = Math.max(x1, x2);
+  const yA = Math.max(y1, y2);
+  const xB = Math.min(x1_2, x2_2);
+  const yB = Math.min(y1_2, y2_2);
+
+  const intersectionArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+  const box1Area = (x1_2 - x1) * (y1_2 - y1);
+  const box2Area = (x2_2 - x2) * (y2_2 - y2);
+  const unionArea = box1Area + box2Area - intersectionArea;
+
+  return intersectionArea / unionArea;
+}
+
+// Helper: Merge overlapping detections from multi-scale detection
+function mergeOverlappingDetections(detections: any[], iouThreshold: number = 0.4): any[] {
+  if (detections.length === 0) return [];
+
+  // Sort by confidence (probability)
+  const sorted = [...detections].sort((a, b) => {
+    const confA = a.probability ? a.probability[0] : 0.5;
+    const confB = b.probability ? b.probability[0] : 0.5;
+    return confB - confA;
+  });
+
+  const keep: any[] = [];
+
+  while (sorted.length > 0) {
+    const current = sorted.shift()!;
+    keep.push(current);
+
+    // Remove overlapping detections
+    const remaining = sorted.filter(det => {
+      const iou = calculateIoU(current, det);
+      return iou < iouThreshold; // Keep if IoU is below threshold
+    });
+
+    sorted.length = 0;
+    sorted.push(...remaining);
+  }
+
+  return keep;
+}
+
 // Color schemes pool for random selection
 const colorSchemes: ColorScheme[] = [
   // Scheme 0: Pink
@@ -106,11 +156,11 @@ const App: React.FC = () => {
         console.log("Loading BlazeFace (optimized for multiple faces)...");
         setStatusText("LOADING DETECTOR...");
 
-        // Load BlazeFace with optimized settings for detecting multiple faces
+        // Load BlazeFace with ULTRA-SENSITIVE settings for detecting MANY small/distant faces
         const blazeModel = await blazeface.load({
-          maxFaces: 20,           // Increase max faces from default 10 to 20
-          iouThreshold: 0.3,      // Intersection over Union threshold for NMS
-          scoreThreshold: 0.6     // Lower threshold to detect more faces (default 0.75)
+          maxFaces: 50,           // Dramatically increase max faces from 20 to 50
+          iouThreshold: 0.2,      // More lenient NMS - allow more overlapping detections
+          scoreThreshold: 0.35    // MUCH lower threshold to catch distant/small faces (from 0.6)
         });
 
         if (cancelled) return;
@@ -183,14 +233,18 @@ const App: React.FC = () => {
     if (!isDetectorReady || !faceDetectorRef.current) return;
     if (!videoRef.current || !overlayCanvasRef.current) return;
 
-    console.log("Starting FAST face detection (200ms interval)...");
+    console.log("Starting ULTRA-SENSITIVE multi-scale detection (200ms interval)...");
+
+    // Create temporary canvas for image preprocessing
+    const tempCanvas = document.createElement('canvas');
+    const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
 
     const detectFaces = async () => {
       const video = videoRef.current;
       const canvas = overlayCanvasRef.current;
       const faceDetector = faceDetectorRef.current;
 
-      if (!video || !canvas || !faceDetector || video.videoWidth === 0) {
+      if (!video || !canvas || !faceDetector || video.videoWidth === 0 || !tempCtx) {
         return;
       }
 
@@ -202,41 +256,70 @@ const App: React.FC = () => {
 
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        detectionIntervalRef.current = requestAnimationFrame(detectObjects);
         return;
       }
 
       try {
-        // Run BlazeFace detection with optimized settings for multiple faces
-        // returnTensors: false, flipHorizontal: false
-        const faceDetections = await faceDetector.estimateFaces(video, false);
+        // MULTI-SCALE DETECTION: Detect faces at different scales to catch small/distant faces
+        const scales = [1.0, 0.75, 0.5]; // Original, 75%, and 50% scale
+        const allDetections: any[] = [];
 
-        console.log(`🔍 BlazeFace detected ${faceDetections.length} faces in current frame`);
+        for (const scale of scales) {
+          // Set temp canvas size based on scale
+          tempCanvas.width = video.videoWidth * scale;
+          tempCanvas.height = video.videoHeight * scale;
+
+          // Draw video to temp canvas with ENHANCED contrast and brightness
+          tempCtx.filter = 'contrast(1.4) brightness(1.2) saturate(1.0)';
+          tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+          tempCtx.filter = 'none';
+
+          // Run detection on this scale
+          const scaleDetections = await faceDetector.estimateFaces(tempCanvas, false);
+
+          // Scale coordinates back to original size
+          scaleDetections.forEach((face: any) => {
+            const scaledFace = {
+              ...face,
+              topLeft: [face.topLeft[0] / scale, face.topLeft[1] / scale],
+              bottomRight: [face.bottomRight[0] / scale, face.bottomRight[1] / scale],
+              landmarks: face.landmarks?.map((lm: number[]) => [lm[0] / scale, lm[1] / scale]),
+              probability: face.probability,
+              scale: scale // Track which scale detected this face
+            };
+            allDetections.push(scaledFace);
+          });
+        }
+
+        // Merge overlapping detections using custom NMS (Non-Maximum Suppression)
+        const mergedDetections = mergeOverlappingDetections(allDetections);
+
+        console.log(`🔍 Multi-scale detection: ${allDetections.length} raw detections → ${mergedDetections.length} merged faces`);
 
         // Clear previous drawings
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-          // Calculate video display dimensions (object-cover)
-          const videoAspect = video.videoWidth / video.videoHeight;
-          const canvasAspect = canvas.width / canvas.height;
+        // Calculate video display dimensions (object-cover)
+        const videoAspect = video.videoWidth / video.videoHeight;
+        const canvasAspect = canvas.width / canvas.height;
 
-          let drawWidth, drawHeight, offsetX, offsetY;
-          if (canvasAspect > videoAspect) {
-            drawWidth = canvas.width;
-            drawHeight = canvas.width / videoAspect;
-            offsetX = 0;
-            offsetY = (canvas.height - drawHeight) / 2;
-          } else {
-            drawHeight = canvas.height;
-            drawWidth = canvas.height * videoAspect;
-            offsetX = (canvas.width - drawWidth) / 2;
-            offsetY = 0;
-          }
+        let drawWidth, drawHeight, offsetX, offsetY;
+        if (canvasAspect > videoAspect) {
+          drawWidth = canvas.width;
+          drawHeight = canvas.width / videoAspect;
+          offsetX = 0;
+          offsetY = (canvas.height - drawHeight) / 2;
+        } else {
+          drawHeight = canvas.height;
+          drawWidth = canvas.height * videoAspect;
+          offsetX = (canvas.width - drawWidth) / 2;
+          offsetY = 0;
+        }
 
-          const headRegions: FaceRegion[] = [];
+        const headRegions: FaceRegion[] = [];
 
-          // Process ALL BlazeFace detections (supports multiple faces)
-          faceDetections.forEach((face: any, index: number) => {
+        // Process ALL merged multi-scale detections
+        mergedDetections.forEach((face: any, index: number) => {
             const [x, y] = face.topLeft;
             const [x2, y2] = face.bottomRight;
             const width = x2 - x;
