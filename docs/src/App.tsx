@@ -103,11 +103,15 @@ const App: React.FC = () => {
 
     const initDetector = async () => {
       try {
-        console.log("Loading BlazeFace (fast mode)...");
+        console.log("Loading BlazeFace (optimized for multiple faces)...");
         setStatusText("LOADING DETECTOR...");
 
-        // Load only BlazeFace - much faster than COCO-SSD
-        const blazeModel = await blazeface.load();
+        // Load BlazeFace with optimized settings for detecting multiple faces
+        const blazeModel = await blazeface.load({
+          maxFaces: 20,           // Increase max faces from default 10 to 20
+          iouThreshold: 0.3,      // Intersection over Union threshold for NMS
+          scoreThreshold: 0.6     // Lower threshold to detect more faces (default 0.75)
+        });
 
         if (cancelled) return;
 
@@ -203,8 +207,11 @@ const App: React.FC = () => {
       }
 
       try {
-        // Run BlazeFace detection (fast & accurate for faces/heads)
+        // Run BlazeFace detection with optimized settings for multiple faces
+        // returnTensors: false, flipHorizontal: false
         const faceDetections = await faceDetector.estimateFaces(video, false);
+
+        console.log(`🔍 BlazeFace detected ${faceDetections.length} faces in current frame`);
 
         // Clear previous drawings
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -228,12 +235,15 @@ const App: React.FC = () => {
 
           const headRegions: FaceRegion[] = [];
 
-          // Process BlazeFace detections
-          faceDetections.forEach((face: any) => {
+          // Process ALL BlazeFace detections (supports multiple faces)
+          faceDetections.forEach((face: any, index: number) => {
             const [x, y] = face.topLeft;
             const [x2, y2] = face.bottomRight;
             const width = x2 - x;
             const height = y2 - y;
+            const confidence = face.probability ? face.probability[0] : 0.9;
+
+            console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] confidence=${confidence.toFixed(2)}`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
@@ -257,6 +267,13 @@ const App: React.FC = () => {
             ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
             ctx.lineWidth = 1;
             ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
+
+            // Draw face number and confidence
+            ctx.fillStyle = 'rgba(0, 255, 0, 0.9)';
+            ctx.font = 'bold 16px monospace';
+            ctx.fillText(`#${index + 1}`, canvasX + 5, canvasY + 20);
+            ctx.font = '12px monospace';
+            ctx.fillText(`${(confidence * 100).toFixed(0)}%`, canvasX + 5, canvasY + 38);
 
             // Calculate GROWTH region - smaller circle in lower-middle part of head
             const growthCenterX = headCenterX;
