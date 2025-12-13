@@ -823,6 +823,7 @@ const App: React.FC = () => {
         autoPlay
         playsInline
         muted
+        controls={false}
         webkit-playsinline="true"
         x5-playsinline="true"
         x-webkit-airplay="allow"
@@ -837,7 +838,11 @@ const App: React.FC = () => {
         }}
         onLoadedMetadata={(e) => {
           const video = e.currentTarget;
-          video.play().catch(err => console.log("Play error:", err));
+          // ULTRA-FAST DOUBLE PLAY FIX - prevents play button from showing
+          video.play().catch(err => console.log("Play error 1:", err));
+          setTimeout(() => {
+            video.play().catch(err => console.log("Play error 2:", err));
+          }, 1); // 1ms = ultra-fast second click
         }}
         onCanPlay={(e) => {
           const video = e.currentTarget;
