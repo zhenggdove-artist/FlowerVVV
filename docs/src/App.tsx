@@ -5,28 +5,56 @@ import { GameState, AnalysisResult, FaceRegion, ColorScheme } from './types.ts';
 import * as blazeface from '@tensorflow-models/blazeface';
 import '@tensorflow/tfjs';
 
-// Initial deep green color scheme (for first 10 clicks)
-const initialColorScheme = (): ColorScheme => ({
-  head: { r: 0.0, g: 1.0, b: 0.5 },           // Bright green head
-  vine: { r: 0.05, g: 0.25, b: 0.15 },        // Deep green vine (墨綠色)
-  flower: { r: 1.0, g: 0.1, b: 0.9 },         // Pink flower
-  bug: { r: 0.1, g: 0.5, b: 0.9 }             // Blue bug
-});
+// Fixed color schemes that cycle every 10 clicks
+const colorSchemes: ColorScheme[] = [
+  // Scheme 0: Pink (clicks 1-10)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.05, g: 0.35, b: 0.15 },
+    flower: { r: 1.0, g: 0.1, b: 0.9 },
+    bug: { r: 1.0, g: 0.3, b: 0.8 }
+  },
+  // Scheme 1: Yellow/Orange (clicks 11-20)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.1, g: 0.4, b: 0.1 },
+    flower: { r: 1.0, g: 0.8, b: 0.0 },
+    bug: { r: 1.0, g: 0.6, b: 0.0 }
+  },
+  // Scheme 2: Purple/Violet (clicks 21-30)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.15, g: 0.3, b: 0.2 },
+    flower: { r: 0.6, g: 0.2, b: 1.0 },
+    bug: { r: 0.8, g: 0.3, b: 1.0 }
+  },
+  // Scheme 3: Red (clicks 31-40)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.1, g: 0.35, b: 0.1 },
+    flower: { r: 1.0, g: 0.1, b: 0.1 },
+    bug: { r: 1.0, g: 0.2, b: 0.3 }
+  },
+  // Scheme 4: Blue/Cyan (clicks 41-50)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.05, g: 0.3, b: 0.25 },
+    flower: { r: 0.0, g: 0.6, b: 1.0 },
+    bug: { r: 0.2, g: 0.8, b: 1.0 }
+  },
+  // Scheme 5: White/Light (clicks 51-60)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.1, g: 0.4, b: 0.15 },
+    flower: { r: 1.0, g: 0.95, b: 0.9 },
+    bug: { r: 0.9, g: 0.9, b: 1.0 }
+  }
+];
 
-// Generate random color scheme for plants (after 10th click)
-const generateRandomColorScheme = (): ColorScheme => {
-  const randomColor = () => ({
-    r: Math.random() * 0.5 + 0.2,  // 0.2-0.7 range
-    g: Math.random() * 0.6 + 0.3,  // 0.3-0.9 range
-    b: Math.random() * 0.6 + 0.3   // 0.3-0.9 range
-  });
-
-  return {
-    head: { r: 0.0, g: 1.0, b: 0.5 },  // Always keep head greenish for visibility
-    vine: randomColor(),
-    flower: randomColor(),
-    bug: randomColor()
-  };
+// Get color scheme based on click count
+const getColorScheme = (clickCount: number): ColorScheme => {
+  const schemeIndex = Math.floor((clickCount - 1) / 10) % colorSchemes.length;
+  return colorSchemes[schemeIndex];
 };
 
 const App: React.FC = () => {
@@ -55,7 +83,7 @@ const App: React.FC = () => {
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
-  const [currentColorScheme, setCurrentColorScheme] = useState<ColorScheme>(initialColorScheme());
+  const [currentColorScheme, setCurrentColorScheme] = useState<ColorScheme>(getColorScheme(1));
 
   console.log("APP STATE - gameState:", gameState, "capturedImage:", !!capturedImage, "heads:", detectedHeads.length, "clicks:", viciClickCount);
 
@@ -288,14 +316,12 @@ const App: React.FC = () => {
     const newClickCount = viciClickCount + 1;
     setViciClickCount(newClickCount);
 
-    // Change color at 11th, 21st, 31st... clicks
-    // (i.e., after every 10 clicks starting from 11)
-    if (newClickCount > 10 && (newClickCount - 1) % 10 === 0) {
-      const newColorScheme = generateRandomColorScheme();
+    // Change color every 10 clicks
+    if ((newClickCount - 1) % 10 === 0) {
+      const newColorScheme = getColorScheme(newClickCount);
       setCurrentColorScheme(newColorScheme);
-      console.log(`🎨 Color scheme changed at click ${newClickCount}:`, newColorScheme);
-    } else if (newClickCount <= 10) {
-      console.log(`Click ${newClickCount}/10 - Using initial deep green scheme`);
+      const schemeName = ['Pink', 'Yellow', 'Purple', 'Red', 'Blue', 'White'][Math.floor((newClickCount - 1) / 10) % 6];
+      console.log(`🎨 Color scheme changed to ${schemeName} at click ${newClickCount}:`, newColorScheme);
     }
 
     // IF IDLE: Capture and detect heads
