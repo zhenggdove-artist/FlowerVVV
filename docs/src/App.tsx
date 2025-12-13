@@ -128,10 +128,12 @@ const App: React.FC = () => {
   const [detectedHeads, setDetectedHeads] = useState<FaceRegion[]>([]);
   const [isDetectorReady, setIsDetectorReady] = useState<boolean>(false);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
+  const [loadingProgress, setLoadingProgress] = useState<string>("Initializing...");
 
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
   const detectionStableCountRef = useRef<number>(0);
   const autoCaptureFiredRef = useRef<boolean>(false);
+  const detectionFrameCount = useRef<number>(0);
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
@@ -154,24 +156,30 @@ const App: React.FC = () => {
     const initDetector = async () => {
       try {
         console.log("Loading BlazeFace (optimized for multiple faces)...");
+        setLoadingProgress("Loading AI model...");
         setStatusText("LOADING DETECTOR...");
 
-        // Load BlazeFace with ULTRA-SENSITIVE settings for detecting MANY small/distant faces
+        // Load BlazeFace with optimized settings
         const blazeModel = await blazeface.load({
-          maxFaces: 50,           // Dramatically increase max faces from 20 to 50
+          maxFaces: 30,           // Balanced: 30 faces (reduced from 50 for performance)
           iouThreshold: 0.2,      // More lenient NMS - allow more overlapping detections
-          scoreThreshold: 0.35    // MUCH lower threshold to catch distant/small faces (from 0.6)
+          scoreThreshold: 0.4     // Balanced threshold (from 0.35, slightly higher for performance)
         });
 
         if (cancelled) return;
 
+        console.log("BlazeFace model loaded, preparing detector...");
+        setLoadingProgress("Initializing detector...");
+
         faceDetectorRef.current = blazeModel;
         setIsDetectorReady(true);
         setStatusText("READY - Point camera at faces");
+        setLoadingProgress("");
         console.log("BlazeFace loaded successfully - READY!");
       } catch (err) {
         console.error("Failed to initialize detector:", err);
         setStatusText("DETECTOR ERROR");
+        setLoadingProgress("Error loading detector");
         setGameState(GameState.ERROR);
       }
     };
@@ -233,9 +241,9 @@ const App: React.FC = () => {
     if (!isDetectorReady || !faceDetectorRef.current) return;
     if (!videoRef.current || !overlayCanvasRef.current) return;
 
-    console.log("Starting ULTRA-SENSITIVE multi-scale detection (200ms interval)...");
+    console.log("Starting SMART adaptive detection (500ms interval)...");
 
-    // Create temporary canvas for image preprocessing
+    // Create temporary canvas for image preprocessing (reusable)
     const tempCanvas = document.createElement('canvas');
     const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
 
@@ -260,8 +268,12 @@ const App: React.FC = () => {
       }
 
       try {
-        // MULTI-SCALE DETECTION: Detect faces at different scales to catch small/distant faces
-        const scales = [1.0, 0.75, 0.5]; // Original, 75%, and 50% scale
+        detectionFrameCount.current++;
+
+        // SMART ADAPTIVE MULTI-SCALE: Only use multiple scales every 3rd frame
+        // This reduces computational load while still catching small faces
+        const useMultiScale = detectionFrameCount.current % 3 === 0;
+        const scales = useMultiScale ? [1.0, 0.6] : [1.0]; // 2 scales instead of 3
         const allDetections: any[] = [];
 
         for (const scale of scales) {
@@ -269,8 +281,13 @@ const App: React.FC = () => {
           tempCanvas.width = video.videoWidth * scale;
           tempCanvas.height = video.videoHeight * scale;
 
-          // Draw video to temp canvas with ENHANCED contrast and brightness
-          tempCtx.filter = 'contrast(1.4) brightness(1.2) saturate(1.0)';
+          // Only apply preprocessing on smaller scale (where it's most needed)
+          if (scale < 1.0) {
+            tempCtx.filter = 'contrast(1.3) brightness(1.15)'; // Reduced processing
+          } else {
+            tempCtx.filter = 'none';
+          }
+
           tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
           tempCtx.filter = 'none';
 
@@ -285,16 +302,20 @@ const App: React.FC = () => {
               bottomRight: [face.bottomRight[0] / scale, face.bottomRight[1] / scale],
               landmarks: face.landmarks?.map((lm: number[]) => [lm[0] / scale, lm[1] / scale]),
               probability: face.probability,
-              scale: scale // Track which scale detected this face
+              scale: scale
             };
             allDetections.push(scaledFace);
           });
         }
 
-        // Merge overlapping detections using custom NMS (Non-Maximum Suppression)
-        const mergedDetections = mergeOverlappingDetections(allDetections);
+        // Merge overlapping detections using custom NMS
+        const mergedDetections = mergeOverlappingDetections(allDetections, 0.35);
 
-        console.log(`🔍 Multi-scale detection: ${allDetections.length} raw detections → ${mergedDetections.length} merged faces`);
+        if (useMultiScale) {
+          console.log(`🔍 Multi-scale: ${allDetections.length} raw → ${mergedDetections.length} merged`);
+        } else {
+          console.log(`🔍 Fast detect: ${mergedDetections.length} faces`);
+        }
 
         // Clear previous drawings
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -380,15 +401,15 @@ const App: React.FC = () => {
           if (headRegions.length > 0) {
             detectionStableCountRef.current++;
 
-            // After 2 stable detections (about 400ms), auto-trigger capture - FAST!
+            // After 2 stable detections (about 1 second), auto-trigger capture
             if (detectionStableCountRef.current >= 2 && !autoCaptureFiredRef.current) {
-              console.log("AUTO-CAPTURE: Faces detected for 2 frames - triggering FAST capture!");
+              console.log("AUTO-CAPTURE: Faces detected for 2 frames - triggering capture!");
               autoCaptureFiredRef.current = true;
 
               // Trigger capture immediately
               setTimeout(() => {
                 handleInteraction();
-              }, 50);
+              }, 100);
             }
 
             setStatusText(`${headRegions.length} DETECTED - CAPTURING...`);
@@ -402,9 +423,9 @@ const App: React.FC = () => {
       }
     };
 
-    // Run detection every 200ms (faster response, still efficient)
+    // Run detection every 500ms (balanced for performance and responsiveness)
     detectFaces();
-    const intervalId = setInterval(detectFaces, 200);
+    const intervalId = setInterval(detectFaces, 500);
     detectionIntervalRef.current = intervalId as any;
 
     return () => {
@@ -574,7 +595,7 @@ const App: React.FC = () => {
         gameState={gameState}
         onInteraction={handleInteraction}
         onReset={handleReset}
-        analysisText={statusText}
+        analysisText={loadingProgress || statusText}
         analysisResult={analysisResult}
       />
 
