@@ -90,18 +90,20 @@ const App: React.FC = () => {
   const detectionStableCountRef = useRef<number>(0);
   const autoCaptureFiredRef = useRef<boolean>(false);
 
-  // For detection box persistence (2 second minimum display)
-  const lastDetectionTimeRef = useRef<number>(0);
-  const lastDetectedRegionsRef = useRef<Array<{
-    canvasX: number;
-    canvasY: number;
-    canvasWidth: number;
-    canvasHeight: number;
-    headCenterX: number;
-    headCenterY: number;
-    headRadius: number;
-    confidence: number;
-    index: number;
+  // For detection box persistence (2 second minimum display per box)
+  const detectedRegionsHistoryRef = useRef<Array<{
+    region: {
+      canvasX: number;
+      canvasY: number;
+      canvasWidth: number;
+      canvasHeight: number;
+      headCenterX: number;
+      headCenterY: number;
+      headRadius: number;
+      confidence: number;
+      index: number;
+    };
+    timestamp: number;
   }>>([]);
 
   // Color scheme management
@@ -124,14 +126,15 @@ const App: React.FC = () => {
 
     const initDetector = async () => {
       try {
-        console.log("Loading BlazeFace (optimized for multiple faces)...");
+        console.log("Loading BlazeFace (optimized for multiple faces and distant detection)...");
         setStatusText("LOADING DETECTOR...");
 
         // Load BlazeFace with optimized settings for detecting multiple faces
+        // Lower scoreThreshold to detect more faces including distant ones
         const blazeModel = await blazeface.load({
-          maxFaces: 20,           // Increase max faces from default 10 to 20
-          iouThreshold: 0.3,      // Intersection over Union threshold for NMS
-          scoreThreshold: 0.6     // Lower threshold to detect more faces (default 0.75)
+          maxFaces: 50,           // Increase to 50 to detect more faces in group scenes
+          iouThreshold: 0.2,      // Lower IOU threshold for better detection of overlapping faces
+          scoreThreshold: 0.4     // Lower threshold to detect distant/unclear faces (default 0.75)
         });
 
         if (cancelled) return;
@@ -318,20 +321,35 @@ const App: React.FC = () => {
             });
           });
 
-          // Update last detection time and regions if faces detected
-          if (detectedRegionsForDisplay.length > 0) {
-            lastDetectionTimeRef.current = currentTime;
-            lastDetectedRegionsRef.current = detectedRegionsForDisplay;
-          }
+          // Add newly detected regions to history with current timestamp
+          detectedRegionsForDisplay.forEach(region => {
+            detectedRegionsHistoryRef.current.push({
+              region: region,
+              timestamp: currentTime
+            });
+          });
 
-          // Determine which regions to display (with 2 second persistence)
-          let regionsToDisplay = detectedRegionsForDisplay;
-          const timeSinceLastDetection = currentTime - lastDetectionTimeRef.current;
+          // Remove regions older than 2 seconds from history
+          detectedRegionsHistoryRef.current = detectedRegionsHistoryRef.current.filter(
+            item => currentTime - item.timestamp < 2000
+          );
 
-          // If no faces detected now, but last detection was within 2 seconds, show last detected regions
-          if (detectedRegionsForDisplay.length === 0 && timeSinceLastDetection < 2000) {
-            regionsToDisplay = lastDetectedRegionsRef.current;
-            console.log(`⏱️ No faces detected, but showing last detection (${(timeSinceLastDetection/1000).toFixed(1)}s ago)`);
+          // Get unique regions to display (merge current detections with recent history)
+          const regionsToDisplay: typeof detectedRegionsForDisplay = [];
+          const addedPositions = new Set<string>();
+
+          // Add all regions from history (including current frame)
+          detectedRegionsHistoryRef.current.forEach(item => {
+            // Use center position as unique key (rounded to avoid floating point issues)
+            const key = `${Math.round(item.region.headCenterX)}_${Math.round(item.region.headCenterY)}`;
+            if (!addedPositions.has(key)) {
+              regionsToDisplay.push(item.region);
+              addedPositions.add(key);
+            }
+          });
+
+          if (detectedRegionsForDisplay.length === 0 && regionsToDisplay.length > 0) {
+            console.log(`⏱️ Showing ${regionsToDisplay.length} persistent detection boxes from recent history`);
           }
 
           // Draw all regions to display
