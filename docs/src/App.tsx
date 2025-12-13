@@ -23,6 +23,7 @@ type StatueMaterialAnalysis = {
   grayRatio: number;
   texture: number;
   signature: Uint8Array;
+  hairDarkRatio?: number;
 };
 
 // Color schemes pool for random selection (紅橙黃綠藍靛紫)
@@ -174,8 +175,11 @@ const analyzeStatueMaterial = (
   let lumaSum = 0;
   let lumaSqSum = 0;
   let edgeSum = 0;
+  let hairDarkCount = 0;
+  let hairSamples = 0;
 
   const stride = Math.max(1, Math.floor(Math.min(width, height) / 24));
+  const hairRegionY = Math.max(1, Math.floor(height * 0.3)); // top 30% area for hair check
 
   for (let y = 0; y < height; y += stride) {
     for (let x = 0; x < width; x += stride) {
@@ -211,6 +215,15 @@ const analyzeStatueMaterial = (
       lumaSum += luma;
       lumaSqSum += luma * luma;
 
+      // Hair heuristic: dense dark band near top of head = likely real human hair
+      if (y <= hairRegionY) {
+        const sat = max === 0 ? 0 : (delta / max) * 100;
+        if (luma < 65 && sat < 65) {
+          hairDarkCount++;
+        }
+        hairSamples++;
+      }
+
       if (x >= stride) {
         const leftIdx = (y * width + (x - stride)) * 4;
         const leftLuma = 0.299 * pixels[leftIdx] + 0.587 * pixels[leftIdx + 1] + 0.114 * pixels[leftIdx + 2];
@@ -233,23 +246,30 @@ const analyzeStatueMaterial = (
   const lumaVariance = lumaSqSum / Math.max(1, totalSamples) - avgLuma * avgLuma;
   const lumaStd = Math.sqrt(Math.max(0, lumaVariance));
   const edgeDensity = edgeSum / (Math.max(1, totalSamples) * 255 * 2);
+  const hairDarkRatio = hairSamples > 0 ? hairDarkCount / hairSamples : 0;
 
   console.log(`    dYZ" Material Analysis: sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%, tex=${(edgeDensity * 100).toFixed(1)}%, lumaStd=${lumaStd.toFixed(1)}`);
 
-  const lowSaturation = avgSaturation < 38;
+  // Hair band heuristic: dark band on top with some saturation => likely human hair
+  const hairLooksHuman = hairDarkRatio > 0.28 && avgSaturation > 20 && grayRatio < 70;
+
+  const lowSaturation = avgSaturation < 50; // relax to allow colored statues
   const veryLowSkin = skinToneRatio < 0.12;
-  const tintedButStone = avgSaturation < 55 && grayRatio > 0.45 && veryLowSkin;
+  const tintedButStone = avgSaturation < 70 && grayRatio > 0.35 && veryLowSkin;
   const stoneTexture = edgeDensity > 0.08 || lumaStd > 18;
 
   let isStatue = false;
   let reason = '';
 
-  if (skinToneRatio > 0.18) {
+  if (hairLooksHuman && skinToneRatio > 0.05) {
+    isStatue = false;
+    reason = `Human hair detected (dark top ${(hairDarkRatio * 100).toFixed(1)}%)`;
+  } else if (skinToneRatio > 0.2) {
     isStatue = false;
     reason = `Human skin detected (${(skinToneRatio * 100).toFixed(1)}%)`;
   } else if ((lowSaturation && veryLowSkin && stoneTexture) || tintedButStone) {
     isStatue = true;
-    reason = `Low saturation/gray + texture (sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%)`;
+    reason = `Low/medium saturation + texture (sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%)`;
   } else if (grayRatio > 0.55 && veryLowSkin) {
     isStatue = true;
     reason = `High gray ratio (${(grayRatio * 100).toFixed(1)}%)`;
@@ -270,7 +290,8 @@ const analyzeStatueMaterial = (
     skinTone: skinToneRatio * 100,
     grayRatio: grayRatio * 100,
     texture: edgeDensity * 100,
-    signature
+    signature,
+    hairDarkRatio: hairDarkRatio * 100
   };
 };
 const App: React.FC = () => {
