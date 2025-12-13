@@ -409,19 +409,29 @@ const App: React.FC = () => {
       if (cancelled) return false;
 
       console.log("🔧 Creating FaceDetector with OPTIMIZED config...");
-      console.log("   - Model: blaze_face_full_range (more robust)");
+      console.log("   - Model: blaze_face_short_range");
       console.log("   - minDetectionConfidence: 0.35 (balanced)");
       console.log("   - minSuppressionThreshold: 0.3 (less strict NMS)");
 
-      const detector = await FaceDetector.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_full_range/float16/1/blaze_face_full_range.tflite",
-          delegate: "GPU"
-        },
-        runningMode: "VIDEO",
-        minDetectionConfidence: 0.35,
-        minSuppressionThreshold: 0.3
-      });
+      const createDetector = async (delegate: 'GPU' | 'CPU') =>
+        FaceDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+            delegate
+          },
+          runningMode: "VIDEO",
+          minDetectionConfidence: 0.35,
+          minSuppressionThreshold: 0.3
+        });
+
+      let detector: FaceDetector;
+      try {
+        detector = await createDetector('GPU');
+      } catch (gpuErr) {
+        console.warn("MediaPipe GPU init failed; retrying CPU:", gpuErr);
+        detector = await createDetector('CPU');
+      }
       console.log("✅ FaceDetector created with HIGH accuracy settings");
 
       if (cancelled) return false;
@@ -446,18 +456,55 @@ const App: React.FC = () => {
 
     const initDetector = async () => {
       try {
+        let ok = false;
+
         if (DETECTION_ENGINE === 'HYBRID') {
-          await initMediaPipe();
-          await initBlazeFace();
+          const mediapipeOk = await initMediaPipe().catch((err) => {
+            console.error("MediaPipe init failed:", err);
+            return false;
+          });
+          const blazeOk = await initBlazeFace().catch((err) => {
+            console.error("BlazeFace init failed:", err);
+            return false;
+          });
+          ok = Boolean(mediapipeOk || blazeOk);
         } else if (DETECTION_ENGINE === 'BLAZEFACE') {
-          await initBlazeFace();
+          const blazeOk = await initBlazeFace().catch((err) => {
+            console.error("BlazeFace init failed:", err);
+            return false;
+          });
+          const mediapipeOk = blazeOk
+            ? false
+            : await initMediaPipe().catch((err) => {
+                console.error("MediaPipe init failed:", err);
+                return false;
+              });
+          ok = Boolean(blazeOk || mediapipeOk);
         } else {
-          await initMediaPipe();
+          const mediapipeOk = await initMediaPipe().catch((err) => {
+            console.error("MediaPipe init failed:", err);
+            return false;
+          });
+          const blazeOk = mediapipeOk
+            ? false
+            : await initBlazeFace().catch((err) => {
+                console.error("BlazeFace init failed:", err);
+                return false;
+              });
+          ok = Boolean(mediapipeOk || blazeOk);
         }
 
-        await initCoco();
+        try {
+          await initCoco();
+        } catch (err) {
+          console.warn("COCO-SSD init failed (continuing without person fallback):", err);
+        }
 
         if (cancelled) return;
+
+        if (!ok && !cocoDetectorRef.current) {
+          throw new Error("No detection model initialized");
+        }
 
         setIsDetectorReady(true);
         setStatusText("READY - Point camera at TARGET");
@@ -530,9 +577,8 @@ const App: React.FC = () => {
     // Check if the appropriate detector is ready
     const hasBlazeFace = !!blazefaceDetectorRef.current;
     const hasMediaPipe = !!mediapipeDetectorRef.current;
-    if (DETECTION_ENGINE === 'BLAZEFACE' && !hasBlazeFace) return;
-    if (DETECTION_ENGINE === 'MEDIAPIPE' && !hasMediaPipe) return;
-    if (DETECTION_ENGINE === 'HYBRID' && !hasBlazeFace && !hasMediaPipe) return;
+    const hasCoco = !!cocoDetectorRef.current;
+    if (!hasBlazeFace && !hasMediaPipe && !hasCoco) return;
 
     console.log(`Starting face detection with ${DETECTION_ENGINE} (200ms interval)...`);
 
@@ -560,6 +606,61 @@ const App: React.FC = () => {
         // DUAL ENGINE DETECTION
         // ============================================
         let faceDetections: any[] = [];
+
+        const runBlazeFace = async (): Promise<boolean> => {
+          const detector = blazefaceDetectorRef.current;
+          if (!detector) return false;
+
+          try {
+            const blazeFaces = await detector.estimateFaces(video, false);
+            faceDetections.push(...blazeFaces.map((f: any) => ({ ...f, _source: 'BLAZEFACE_FACE' })));
+            return blazeFaces.length > 0;
+          } catch (err) {
+            console.warn("BlazeFace detect() failed:", err);
+            return false;
+          }
+        };
+
+        const runMediaPipe = (): boolean => {
+          const detector = mediapipeDetectorRef.current;
+          if (!detector) return false;
+
+          try {
+            const timestamp = video.currentTime * 1000;
+            const result = detector.detectForVideo(video, timestamp);
+
+            const converted = (result.detections || []).map((detection: any) => {
+              const bbox = detection.boundingBox;
+              return {
+                topLeft: [bbox.originX, bbox.originY],
+                bottomRight: [bbox.originX + bbox.width, bbox.originY + bbox.height],
+                probability: detection.categories && detection.categories.length > 0
+                  ? [detection.categories[0].score]
+                  : [0.5],
+                _source: 'MEDIAPIPE_FACE'
+              };
+            });
+
+            faceDetections.push(...converted);
+            return converted.length > 0;
+          } catch (err) {
+            console.warn("MediaPipe detect() failed:", err);
+            return false;
+          }
+        };
+
+        if (DETECTION_ENGINE === 'HYBRID') {
+          runMediaPipe();
+          await runBlazeFace();
+        } else if (DETECTION_ENGINE === 'MEDIAPIPE') {
+          const mediapipeOk = runMediaPipe();
+          if (!mediapipeOk) await runBlazeFace();
+        } else {
+          const blazeOk = await runBlazeFace();
+          if (!blazeOk) runMediaPipe();
+        }
+
+        /*
 
         // HYBRID: run BlazeFace + MediaPipe and combine results
         if (DETECTION_ENGINE === 'HYBRID') {
@@ -629,6 +730,8 @@ const App: React.FC = () => {
           console.log(`✅ MediaPipe detected ${faceDetections.length} faces (after conversion)`);
         }
 
+        */
+
         // ============================================
         // COCO-SSD PERSON DETECTION (HEAD FALLBACK)
         const now = Date.now();
@@ -636,50 +739,54 @@ const App: React.FC = () => {
         const PERSON_REFRESH_MS = 400;
         const PERSON_MIN_SCORE = 0.25;
 
-        if (coco && now - lastPersonDetectAtRef.current > PERSON_REFRESH_MS) {
-          try {
-            const detections = await coco.detect(video, 20, PERSON_MIN_SCORE);
-            const personHeads = (detections || [])
-              .filter((d: cocoSsd.DetectedObject) => d.class === 'person' && d.score >= PERSON_MIN_SCORE)
-              .map((d: cocoSsd.DetectedObject) => {
-                const [px, py, pw, ph] = d.bbox;
-                const aspect = ph / Math.max(1, pw);
+        const shouldUsePersonFallback = faceDetections.length === 0;
 
-                const headHeightRatio = aspect < 1.2 ? 0.55 : 0.35;
-                const headWidthRatio = aspect < 1.2 ? 0.8 : 0.5;
+        if (shouldUsePersonFallback) {
+          if (coco && now - lastPersonDetectAtRef.current > PERSON_REFRESH_MS) {
+            try {
+              const detections = await coco.detect(video, 20, PERSON_MIN_SCORE);
+              const personHeads = (detections || [])
+                .filter((d: cocoSsd.DetectedObject) => d.class === 'person' && d.score >= PERSON_MIN_SCORE)
+                .map((d: cocoSsd.DetectedObject) => {
+                  const [px, py, pw, ph] = d.bbox;
+                  const aspect = ph / Math.max(1, pw);
 
-                const headW = pw * headWidthRatio;
-                const headH = ph * headHeightRatio;
-                const headX = px + (pw - headW) / 2;
-                const headY = py;
+                  const headHeightRatio = aspect < 1.2 ? 0.55 : 0.35;
+                  const headWidthRatio = aspect < 1.2 ? 0.8 : 0.5;
 
-                const clampedX = Math.max(0, Math.min(video.videoWidth - 1, headX));
-                const clampedY = Math.max(0, Math.min(video.videoHeight - 1, headY));
-                const clampedW = Math.max(1, Math.min(video.videoWidth - clampedX, headW));
-                const clampedH = Math.max(1, Math.min(video.videoHeight - clampedY, headH));
+                  const headW = pw * headWidthRatio;
+                  const headH = ph * headHeightRatio;
+                  const headX = px + (pw - headW) / 2;
+                  const headY = py;
 
-                return {
-                  topLeft: [clampedX, clampedY],
-                  bottomRight: [clampedX + clampedW, clampedY + clampedH],
-                  probability: [d.score],
-                  _source: 'COCO_PERSON'
-                };
-              });
+                  const clampedX = Math.max(0, Math.min(video.videoWidth - 1, headX));
+                  const clampedY = Math.max(0, Math.min(video.videoHeight - 1, headY));
+                  const clampedW = Math.max(1, Math.min(video.videoWidth - clampedX, headW));
+                  const clampedH = Math.max(1, Math.min(video.videoHeight - clampedY, headH));
 
-            cachedPersonHeadDetectionsRef.current = personHeads;
-            lastPersonDetectAtRef.current = now;
-          } catch (err) {
-            console.warn("COCO-SSD detect() failed:", err);
+                  return {
+                    topLeft: [clampedX, clampedY],
+                    bottomRight: [clampedX + clampedW, clampedY + clampedH],
+                    probability: [d.score],
+                    _source: 'COCO_PERSON'
+                  };
+                });
+
+              cachedPersonHeadDetectionsRef.current = personHeads;
+              lastPersonDetectAtRef.current = now;
+            } catch (err) {
+              console.warn("COCO-SSD detect() failed:", err);
+            }
           }
-        }
 
-        if (cachedPersonHeadDetectionsRef.current.length > 0) {
-          faceDetections = [...faceDetections, ...cachedPersonHeadDetectionsRef.current];
+          if (cachedPersonHeadDetectionsRef.current.length > 0) {
+            faceDetections.push(...cachedPersonHeadDetectionsRef.current);
+          }
         }
 
         // UNIFIED PROCESSING (Both engines)
         // ============================================
-        console.log(`🔍 ${DETECTION_ENGINE} detected ${faceDetections.length} faces in current frame`);
+        // console.log(`🔍 ${DETECTION_ENGINE} detected ${faceDetections.length} face/head candidate(s)`);
 
         // Clear previous drawings
         ctx.clearRect(0, 0, canvas.width, canvas.height);
