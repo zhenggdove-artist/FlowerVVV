@@ -179,7 +179,7 @@ const analyzeStatueMaterial = (
   let hairSamples = 0;
 
   const stride = Math.max(1, Math.floor(Math.min(width, height) / 24));
-  const hairRegionY = Math.max(1, Math.floor(height * 0.35)); // top ~35% area for hair check
+  const hairRegionY = Math.max(1, Math.floor(height * 0.4)); // top 40% area for hair check
 
   for (let y = 0; y < height; y += stride) {
     for (let x = 0; x < width; x += stride) {
@@ -217,8 +217,7 @@ const analyzeStatueMaterial = (
 
       // Hair heuristic: dense dark band near top of head = likely real human hair
       if (y <= hairRegionY) {
-        const sat = max === 0 ? 0 : (delta / max) * 100;
-        if (luma < 90 && sat < 90) {
+        if (luma < 110) {
           hairDarkCount++;
         }
         hairSamples++;
@@ -251,7 +250,7 @@ const analyzeStatueMaterial = (
   console.log(`    dYZ" Material Analysis: sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%, tex=${(edgeDensity * 100).toFixed(1)}%, lumaStd=${lumaStd.toFixed(1)}, hairDark=${(hairDarkRatio * 100).toFixed(1)}%`);
 
   // Hair band heuristic: dark band on top => likely human hair
-  const hairLooksHuman = hairDarkRatio > 0.18;
+  const hairLooksHuman = hairDarkRatio > 0.12; // very sensitive to large dark top area
 
   let isStatue = true;
   let reason = 'No human hair signature detected';
@@ -259,7 +258,7 @@ const analyzeStatueMaterial = (
   if (hairLooksHuman) {
     isStatue = false;
     reason = `Human hair detected (dark top ${(hairDarkRatio * 100).toFixed(1)}%)`;
-  } else if (skinToneRatio > 0.35) {
+  } else if (skinToneRatio > 0.45) {
     isStatue = false;
     reason = `Human skin detected (${(skinToneRatio * 100).toFixed(1)}%)`;
   }
@@ -304,12 +303,25 @@ const App: React.FC = () => {
   const [isDetectorReady, setIsDetectorReady] = useState<boolean>(false);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
 
-  const [growthTrigger, setGrowthTrigger] = useState<number>(0);
-  const detectionStableCountRef = useRef<number>(0);
-  const autoCaptureFiredRef = useRef<boolean>(false);
-  const lastDetectedHeadsRef = useRef<FaceRegion[]>([]);
-
-  const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; timestamp: number }>>(new Map());
+const [growthTrigger, setGrowthTrigger] = useState<number>(0);
+const detectionStableCountRef = useRef<number>(0);
+const autoCaptureFiredRef = useRef<boolean>(false);
+const lastDetectedHeadsRef = useRef<FaceRegion[]>([]);
+const detectedRegionsHistoryRef = useRef<Array<{
+  region: {
+    canvasX: number;
+    canvasY: number;
+    canvasWidth: number;
+    canvasHeight: number;
+    headCenterX: number;
+    headCenterY: number;
+    headRadius: number;
+    confidence: number;
+    index: number;
+  };
+  timestamp: number;
+}>>([]);
+const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; timestamp: number }>>(new Map());
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
@@ -610,26 +622,26 @@ const App: React.FC = () => {
             // ============================================
 
             // Filter 1: Reject detections that are too large (likely false positives)
-            // MediaPipe more strict: max 50% of video dimension (was 70%)
-            const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * (DETECTION_ENGINE === 'MEDIAPIPE' ? 0.5 : 0.7);
+            // MediaPipe more strict: max 80% of video dimension (allow close-up statues)
+            const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * (DETECTION_ENGINE === 'MEDIAPIPE' ? 0.8 : 0.8);
             if (width > maxFaceSize || height > maxFaceSize) {
               console.log(`  ❌ FILTER 1 FAIL: Face ${index + 1} too large (${width.toFixed(0)}x${height.toFixed(0)} exceeds ${maxFaceSize.toFixed(0)})`);
               return;
             }
 
             // Filter 2: Reject detections that are too small (noise)
-            // For MediaPipe: minimum 1.0% of video width or 8 pixels (allow distant statues)
+            // For MediaPipe: minimum 0.8% of video width or 6 pixels (allow distant statues)
             const minFaceSize = DETECTION_ENGINE === 'MEDIAPIPE'
-              ? Math.max(8, video.videoWidth * 0.01)
-              : Math.max(6, video.videoWidth * 0.008);
+              ? Math.max(6, video.videoWidth * 0.008)
+              : Math.max(5, video.videoWidth * 0.006);
             if (width < minFaceSize || height < minFaceSize) {
               console.log(`  ❌ FILTER 2 FAIL: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize.toFixed(0)})`);
               return;
             }
 
             // Filter 3: Reject detections with low confidence
-            // MediaPipe: Match relaxed minDetectionConfidence (0.28), BlazeFace: 0.18
-            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.28 : 0.18;
+            // MediaPipe: Match relaxed minDetectionConfidence (0.22), BlazeFace: 0.18
+            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.22 : 0.18;
             if (confidence < minConfidence) {
               console.log(`  ❌ FILTER 3 FAIL: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}%)`);
               return;
@@ -689,20 +701,8 @@ const App: React.FC = () => {
             }
 
             // ============================================
-            // Filter 8: Motion/liveness rejection (statues stay still)
-            // ============================================
-            const motionKey = `${Math.round(x)}_${Math.round(y)}_${Math.round(width)}_${Math.round(height)}`;
-            const previousSignature = regionMotionHistoryRef.current.get(motionKey);
-            const motionScore = computeMotionScore(previousSignature?.signature, materialAnalysis.signature);
-            const applyMotionGate = materialAnalysis.skinTone > 5 || materialAnalysis.saturation > 30;
-            if (applyMotionGate && motionScore > 0.12) {
-              console.log(`  ❌ FILTER 8 FAIL: Region moved too much (${(motionScore * 100).toFixed(1)}%) - likely human/liveness`);
-              regionMotionHistoryRef.current.set(motionKey, { signature: materialAnalysis.signature.slice(), timestamp: currentTime });
-              return;
-            }
-            regionMotionHistoryRef.current.set(motionKey, { signature: materialAnalysis.signature.slice(), timestamp: currentTime });
-
-            console.log(`  ✅✅ FINAL ACCEPTANCE: Face ${index + 1} is a STATUE - passed ALL filters including material + motion checks`);
+            // Motion filter disabled to maximize detection retention
+            console.log(`  ✅✅ FINAL ACCEPTANCE: Face ${index + 1} is a STATUE - passed ALL filters`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
@@ -751,25 +751,50 @@ const App: React.FC = () => {
             }
           });
 
-          // No persistence: only show current-frame detections for responsiveness
-          const regionsToDisplay = detectedRegionsForDisplay;
+          // Add newly detected regions to history with current timestamp
+          detectedRegionsForDisplay.forEach(region => {
+            detectedRegionsHistoryRef.current.push({
+              region: region,
+              timestamp: currentTime
+            });
+          });
+
+          // Remove regions older than 1 second from history
+          detectedRegionsHistoryRef.current = detectedRegionsHistoryRef.current.filter(
+            item => currentTime - item.timestamp < 1000
+          );
+
+          // Get unique regions to display (merge current detections with recent history)
+          const regionsToDisplay: typeof detectedRegionsForDisplay = [];
+          const addedPositions = new Set<string>();
+
+          detectedRegionsHistoryRef.current.forEach(item => {
+            const key = `${Math.round(item.region.headCenterX)}_${Math.round(item.region.headCenterY)}`;
+            if (!addedPositions.has(key)) {
+              regionsToDisplay.push(item.region);
+              addedPositions.add(key);
+            }
+          });
 
           // Draw all regions to display
           regionsToDisplay.forEach((region) => {
-            // Draw circle with 2pt semi-transparent line
+            // Draw circle with dashed orange line
             ctx.beginPath();
+            ctx.setLineDash([6, 4]);
             ctx.arc(region.headCenterX, region.headCenterY, region.headRadius, 0, 2 * Math.PI);
-            ctx.strokeStyle = 'rgba(0, 255, 0, 0.6)';
+            ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)';
             ctx.lineWidth = 2;
             ctx.stroke();
 
-            // Draw detection box
-            ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
-            ctx.lineWidth = 1;
+            // Draw detection box dashed orange
+            ctx.setLineDash([6, 4]);
+            ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)';
+            ctx.lineWidth = 1.5;
             ctx.strokeRect(region.canvasX, region.canvasY, region.canvasWidth, region.canvasHeight);
 
             // Draw face number and confidence
-            ctx.fillStyle = 'rgba(0, 255, 0, 0.9)';
+            ctx.setLineDash([]);
+            ctx.fillStyle = 'rgba(255, 165, 0, 0.9)';
             ctx.font = 'bold 16px monospace';
             ctx.fillText(`#${region.index + 1}`, region.canvasX + 5, region.canvasY + 20);
             ctx.font = '12px monospace';
