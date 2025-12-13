@@ -159,11 +159,11 @@ const App: React.FC = () => {
         setLoadingProgress("Loading AI model...");
         setStatusText("LOADING DETECTOR...");
 
-        // Load BlazeFace with optimized settings
+        // Load BlazeFace with ULTRA-SENSITIVE settings for distant faces
         const blazeModel = await blazeface.load({
-          maxFaces: 30,           // Balanced: 30 faces (reduced from 50 for performance)
+          maxFaces: 30,           // Support up to 30 faces
           iouThreshold: 0.2,      // More lenient NMS - allow more overlapping detections
-          scoreThreshold: 0.4     // Balanced threshold (from 0.35, slightly higher for performance)
+          scoreThreshold: 0.3     // VERY LOW threshold for distant/small faces
         });
 
         if (cancelled) return;
@@ -270,10 +270,12 @@ const App: React.FC = () => {
       try {
         detectionFrameCount.current++;
 
-        // SMART ADAPTIVE MULTI-SCALE: Only use multiple scales every 3rd frame
-        // This reduces computational load while still catching small faces
-        const useMultiScale = detectionFrameCount.current % 3 === 0;
-        const scales = useMultiScale ? [1.0, 0.6] : [1.0]; // 2 scales instead of 3
+        // ENHANCED MULTI-SCALE: Use more scales for better distant face detection
+        // Every other frame uses multi-scale (balance between performance and accuracy)
+        const useMultiScale = detectionFrameCount.current % 2 === 0;
+
+        // 4 scales: 1.0x (original), 0.7x (medium), 0.5x (small), 0.35x (very small/distant)
+        const scales = useMultiScale ? [1.0, 0.7, 0.5, 0.35] : [1.0, 0.6];
         const allDetections: any[] = [];
 
         for (const scale of scales) {
@@ -281,10 +283,15 @@ const App: React.FC = () => {
           tempCanvas.width = video.videoWidth * scale;
           tempCanvas.height = video.videoHeight * scale;
 
-          // Only apply preprocessing on smaller scale (where it's most needed)
-          if (scale < 1.0) {
-            tempCtx.filter = 'contrast(1.3) brightness(1.15)'; // Reduced processing
+          // Apply STRONG preprocessing on smaller scales for distant faces
+          if (scale <= 0.5) {
+            // Very small scale: strong enhancement
+            tempCtx.filter = 'contrast(1.5) brightness(1.25) saturate(0.9)';
+          } else if (scale < 1.0) {
+            // Medium scale: moderate enhancement
+            tempCtx.filter = 'contrast(1.35) brightness(1.18)';
           } else {
+            // Original scale: no enhancement
             tempCtx.filter = 'none';
           }
 
@@ -308,13 +315,13 @@ const App: React.FC = () => {
           });
         }
 
-        // Merge overlapping detections using custom NMS
-        const mergedDetections = mergeOverlappingDetections(allDetections, 0.35);
+        // Merge overlapping detections using custom NMS (more lenient for distant faces)
+        const mergedDetections = mergeOverlappingDetections(allDetections, 0.4);
 
         if (useMultiScale) {
-          console.log(`🔍 Multi-scale: ${allDetections.length} raw → ${mergedDetections.length} merged`);
+          console.log(`🔍 Multi-scale (4 scales): ${allDetections.length} raw → ${mergedDetections.length} merged`);
         } else {
-          console.log(`🔍 Fast detect: ${mergedDetections.length} faces`);
+          console.log(`🔍 Fast detect (2 scales): ${mergedDetections.length} faces`);
         }
 
         // Clear previous drawings
@@ -346,8 +353,9 @@ const App: React.FC = () => {
             const width = x2 - x;
             const height = y2 - y;
             const confidence = face.probability ? face.probability[0] : 0.9;
+            const detectionScale = face.scale || 1.0;
 
-            console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] confidence=${confidence.toFixed(2)}`);
+            console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] conf=${confidence.toFixed(2)} scale=${detectionScale.toFixed(2)}x`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
@@ -372,12 +380,15 @@ const App: React.FC = () => {
             ctx.lineWidth = 1;
             ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
 
-            // Draw face number and confidence
+            // Draw face number, confidence, and detection scale
             ctx.fillStyle = 'rgba(0, 255, 0, 0.9)';
             ctx.font = 'bold 16px monospace';
             ctx.fillText(`#${index + 1}`, canvasX + 5, canvasY + 20);
             ctx.font = '12px monospace';
             ctx.fillText(`${(confidence * 100).toFixed(0)}%`, canvasX + 5, canvasY + 38);
+            ctx.font = '10px monospace';
+            ctx.fillStyle = 'rgba(255, 255, 0, 0.9)';
+            ctx.fillText(`${detectionScale.toFixed(2)}x`, canvasX + 5, canvasY + 52);
 
             // Calculate GROWTH region - smaller circle in lower-middle part of head
             const growthCenterX = headCenterX;
