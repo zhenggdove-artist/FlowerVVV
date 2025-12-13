@@ -11,6 +11,7 @@ interface DreamOverlayProps {
 
 const DreamOverlay: React.FC<DreamOverlayProps> = ({ gameState, onInteraction, onReset, analysisText, analysisResult }) => {
   const [randomCode, setRandomCode] = useState<string>('');
+  const [showViciButton, setShowViciButton] = useState<boolean>(true);
 
   // Generate random "matrix" code effect
   useEffect(() => {
@@ -24,6 +25,11 @@ const DreamOverlay: React.FC<DreamOverlayProps> = ({ gameState, onInteraction, o
     }, 100);
     return () => clearInterval(interval);
   }, []);
+
+  // Toggle VICI button visibility
+  const toggleViciButton = () => {
+    setShowViciButton(prev => !prev);
+  };
 
   // Convert polygon points to SVG path string for visualization
   const getPolygonPath = () => {
@@ -39,7 +45,9 @@ const DreamOverlay: React.FC<DreamOverlayProps> = ({ gameState, onInteraction, o
       
       {/* --- HEADER --- */}
       <div className="flex flex-col items-center justify-center w-full mt-4">
-        <h1 className="text-4xl md:text-7xl font-future text-white tracking-widest"
+        <h1
+            onClick={toggleViciButton}
+            className="text-4xl md:text-7xl font-future text-white tracking-widest pointer-events-auto cursor-pointer hover:scale-105 transition-transform duration-200"
             style={{
               textShadow: '0 0 15px #FF10F0, 0 0 25px #FF10F0',
               WebkitTextStroke: '0.5px #FF10F0',
@@ -60,8 +68,8 @@ const DreamOverlay: React.FC<DreamOverlayProps> = ({ gameState, onInteraction, o
         }
       `}</style>
 
-      {/* --- CENTRAL RETICLE (Only in IDLE) --- */}
-      {gameState === GameState.IDLE && (
+      {/* --- CENTRAL RETICLE (Only in IDLE and when VICI button is visible) --- */}
+      {gameState === GameState.IDLE && showViciButton && (
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-64 h-64 border border-neon-pink/30 opacity-70">
           <div className="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-neon-pink shadow-[0_0_10px_#FF10F0]"></div>
           <div className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-neon-pink shadow-[0_0_10px_#FF10F0]"></div>
@@ -105,25 +113,27 @@ const DreamOverlay: React.FC<DreamOverlayProps> = ({ gameState, onInteraction, o
 
       {/* --- FOOTER CONTROLS --- */}
       <div className="flex flex-col items-center justify-end w-full mb-12 pointer-events-auto">
-        
+
         {/* Status Text */}
         <div className="mb-8 font-code text-neon-pink h-6 text-lg tracking-wider drop-shadow-[0_0_8px_#FF10F0]">
           {analysisText}
         </div>
 
-        {/* MAIN BUTTON - Handles both Capture and Propagate */}
-        <button
-            onClick={onInteraction}
-            disabled={gameState === GameState.ANALYZING}
-            className={`group relative px-12 py-5 bg-black/60 overflow-hidden border-2 transition-all active:scale-95 duration-200 shadow-[0_0_20px_rgba(255,16,240,0.2)]
-                ${gameState === GameState.ANALYZING ? 'border-gray-500 opacity-50 cursor-not-allowed' : 'border-neon-pink hover:bg-neon-pink/10 cursor-pointer hover:shadow-[0_0_40px_rgba(255,16,240,0.6)]'}
-            `}
-        >
-            <div className="absolute inset-0 w-full h-full bg-neon-pink/20 transform translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out"></div>
-            <span className="relative font-future text-2xl md:text-3xl text-white tracking-[0.2em] font-bold group-hover:text-white transition-colors drop-shadow-[0_0_5px_#FF10F0]">
-              {gameState === GameState.IDLE ? 'VICI' : (gameState === GameState.GROWING ? 'VICI' : '...')}
-            </span>
-        </button>
+        {/* MAIN BUTTON - Handles both Capture and Propagate (only shown when showViciButton is true) */}
+        {showViciButton && (
+          <button
+              onClick={onInteraction}
+              disabled={gameState === GameState.ANALYZING}
+              className={`group relative px-12 py-5 bg-black/60 overflow-hidden border-2 transition-all active:scale-95 duration-200 shadow-[0_0_20px_rgba(255,16,240,0.2)]
+                  ${gameState === GameState.ANALYZING ? 'border-gray-500 opacity-50 cursor-not-allowed' : 'border-neon-pink hover:bg-neon-pink/10 cursor-pointer hover:shadow-[0_0_40px_rgba(255,16,240,0.6)]'}
+              `}
+          >
+              <div className="absolute inset-0 w-full h-full bg-neon-pink/20 transform translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out"></div>
+              <span className="relative font-future text-2xl md:text-3xl text-white tracking-[0.2em] font-bold group-hover:text-white transition-colors drop-shadow-[0_0_5px_#FF10F0]">
+                {gameState === GameState.IDLE ? 'VICI' : (gameState === GameState.GROWING ? 'VICI' : '...')}
+              </span>
+          </button>
+        )}
 
         {/* RESET BUTTON (Small) */}
         {(gameState === GameState.GROWING || gameState === GameState.ERROR) && (
