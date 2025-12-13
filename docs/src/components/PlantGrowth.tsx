@@ -42,11 +42,11 @@ const vertexShader = `
 
     vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
 
-    // Larger sizes for better visibility
-    float size = 5.0;
-    if (aType > 2.5 && aType < 3.5) size = 8.0; // Flowers larger
-    else if (aType > 1.5 && aType < 2.5) size = 4.0; // Stems thicker
-    else if (aType > 3.5) size = 3.0; // Bugs
+    // Reasonable sizes - not too big
+    float size = 4.0;
+    if (aType > 2.5 && aType < 3.5) size = 6.0; // Flowers
+    else if (aType > 1.5 && aType < 2.5) size = 3.0; // Stems
+    else if (aType > 3.5) size = 2.5; // Bugs
     gl_PointSize = (aType > 0.5) ? size : 0.0;
 
     gl_Position = projectionMatrix * mvPosition;
@@ -307,32 +307,6 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     const points = new THREE.Points(geometry, material);
     scene.add(points);
 
-    // Create leaf mesh system
-    const leafMaterial = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 } },
-      vertexShader: leafVertexShader,
-      fragmentShader: leafFragmentShader,
-      transparent: true,
-      side: THREE.DoubleSide,
-      depthTest: false,
-      vertexColors: true,
-    });
-    const leafGroup = new THREE.Group();
-    scene.add(leafGroup);
-
-    // Create flower mesh system (5 petals)
-    const flowerMaterial = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 } },
-      vertexShader: flowerVertexShader,
-      fragmentShader: flowerFragmentShader,
-      transparent: true,
-      side: THREE.DoubleSide,
-      depthTest: false,
-      vertexColors: true,
-    });
-    const flowerGroup = new THREE.Group();
-    scene.add(flowerGroup);
-
     dataRef.current = {
       positions: positions,
       colors: colors,
@@ -347,10 +321,6 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
     rendererRef.current = renderer;
     geometryRef.current = geometry;
     materialRef.current = material;
-    leafGroupRef.current = leafGroup;
-    flowerGroupRef.current = flowerGroup;
-    leafMaterialRef.current = leafMaterial;
-    flowerMaterialRef.current = flowerMaterial;
 
     animate();
 
@@ -360,22 +330,8 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
         mountRef.current.removeChild(renderer.domElement);
       }
 
-      // Clean up leaf and flower meshes
-      leafGroup.children.forEach(child => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-        }
-      });
-      flowerGroup.children.forEach(child => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-        }
-      });
-
       geometry.dispose();
       material.dispose();
-      leafMaterial.dispose();
-      flowerMaterial.dispose();
       renderer.dispose();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -392,22 +348,25 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
   const spawnGrowth = (count: number) => {
     if (!dataRef.current) return;
     const { positions, colors, types, velocities, life, activeHeads } = dataRef.current;
-    
+
     // Safety check for data availability
     const edgePoints = edgePointsRef.current;
     const edgeCount = edgeCountRef.current;
     const surfacePoints = surfacePointsRef.current;
     const surfaceCount = surfaceCountRef.current;
-    
+
     if (!edgePoints && !surfacePoints) return;
+
+    // Calculate Z depth for new plants (higher = more in front)
+    const baseZ = Date.now() / 10000; // Slowly increasing Z over time
 
     let spawned = 0;
     for (let i = 0; i < MAX_PARTICLES; i++) {
         if (spawned >= count) break;
-        
+
         if (types[i] === 0) {
             let x = 0, y = 0;
-            
+
             // Randomly choose between edge and surface (50/50 if both exist)
             const useSurface = surfaceCount > 0 && (Math.random() > 0.5 || edgeCount === 0);
 
@@ -425,10 +384,10 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
             types[i] = 1; // HEAD
             life[i] = 1.0;
-            
+
             positions[i * 3] = x;
             positions[i * 3 + 1] = y;
-            positions[i * 3 + 2] = 0;
+            positions[i * 3 + 2] = baseZ; // New plants in front
 
             // Random growth direction - allow all directions
             const angle = Math.random() * Math.PI * 2; // 360 degrees
@@ -436,7 +395,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
             velocities[i * 3] = Math.cos(angle) * speed;
             velocities[i * 3 + 1] = Math.sin(angle) * speed;
 
-            // Use colorScheme for head color (keep it greenish for visibility)
+            // IMPORTANT: Use current colorScheme for new plants
             colors[i * 3] = colorScheme.head.r;
             colors[i * 3 + 1] = colorScheme.head.g;
             colors[i * 3 + 2] = colorScheme.head.b;
@@ -445,21 +404,28 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
             spawned++;
         }
     }
-    if (geometryRef.current) geometryRef.current.attributes.aType.needsUpdate = true;
+    if (geometryRef.current) {
+      geometryRef.current.attributes.aType.needsUpdate = true;
+      geometryRef.current.attributes.color.needsUpdate = true;
+      geometryRef.current.attributes.position.needsUpdate = true;
+    }
   };
 
-  const spawnStatic = (x: number, y: number, type: number) => {
+  const spawnStatic = (x: number, y: number, type: number, z: number = 0) => {
      if (!dataRef.current) return;
      const { positions, colors, types, life } = dataRef.current;
 
+     // Reduced particle count per spawn for better performance
+     const particleCount = type === 3 ? 8 : 3; // More for flowers, less for vines
      const start = Math.floor(Math.random() * MAX_PARTICLES);
-     for (let j = 0; j < 50; j++) {
+
+     for (let j = 0; j < particleCount; j++) {
          const idx = (start + j) % MAX_PARTICLES;
          if (types[idx] === 0) {
              types[idx] = type;
-             positions[idx * 3] = x;
-             positions[idx * 3 + 1] = y;
-             positions[idx * 3 + 2] = 0;
+             positions[idx * 3] = x + (Math.random() - 0.5) * 2;
+             positions[idx * 3 + 1] = y + (Math.random() - 0.5) * 2;
+             positions[idx * 3 + 2] = z; // Use the Z from parent
              life[idx] = -1;
 
              // Add slight random variation to colors (±15%)
@@ -467,74 +433,20 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
              const randomize = (value: number) =>
                Math.max(0, Math.min(1, value + (Math.random() - 0.5) * variation));
 
-             if (type === 2) { // VINE BODY - Use colorScheme
+             if (type === 2) { // VINE BODY
                 colors[idx * 3] = randomize(colorScheme.vine.r);
                 colors[idx * 3 + 1] = randomize(colorScheme.vine.g);
                 colors[idx * 3 + 2] = randomize(colorScheme.vine.b);
-
-                // Spawn leaves along the vine (randomly)
-                if (Math.random() < 0.4 && leafGroupRef.current) {
-                  const leafGeom = new THREE.PlaneGeometry(20, 12);
-
-                  // Set vertex colors for the leaf
-                  const leafColors = new Float32Array(leafGeom.attributes.position.count * 3);
-                  const leafR = randomize(colorScheme.vine.r);
-                  const leafG = randomize(colorScheme.vine.g);
-                  const leafB = randomize(colorScheme.vine.b);
-                  for (let k = 0; k < leafColors.length; k += 3) {
-                    leafColors[k] = leafR;
-                    leafColors[k + 1] = leafG;
-                    leafColors[k + 2] = leafB;
-                  }
-                  leafGeom.setAttribute('color', new THREE.BufferAttribute(leafColors, 3));
-
-                  const leafMesh = new THREE.Mesh(leafGeom, leafMaterialRef.current!);
-                  leafMesh.position.set(x, y, 0);
-                  leafMesh.rotation.z = (Math.random() - 0.5) * 1.2; // Random angle
-                  const scale = 0.7 + Math.random() * 0.5;
-                  leafMesh.scale.set(scale, scale, 1);
-
-                  leafGroupRef.current.add(leafMesh);
-                }
-             } else if (type === 3) { // FLOWER - Use colorScheme
+             } else if (type === 3) { // FLOWER
                 colors[idx * 3] = randomize(colorScheme.flower.r);
                 colors[idx * 3 + 1] = randomize(colorScheme.flower.g);
                 colors[idx * 3 + 2] = randomize(colorScheme.flower.b);
-
-                // Create 5-petal flower
-                if (flowerGroupRef.current && Math.random() < 0.8) {
-                  const petalR = randomize(colorScheme.flower.r);
-                  const petalG = randomize(colorScheme.flower.g);
-                  const petalB = randomize(colorScheme.flower.b);
-
-                  for (let p = 0; p < 5; p++) {
-                    const petalGeom = new THREE.PlaneGeometry(12, 15);
-
-                    // Set vertex colors for the petal
-                    const petalColors = new Float32Array(petalGeom.attributes.position.count * 3);
-                    for (let k = 0; k < petalColors.length; k += 3) {
-                      petalColors[k] = petalR;
-                      petalColors[k + 1] = petalG;
-                      petalColors[k + 2] = petalB;
-                    }
-                    petalGeom.setAttribute('color', new THREE.BufferAttribute(petalColors, 3));
-
-                    const petalMesh = new THREE.Mesh(petalGeom, flowerMaterialRef.current!);
-                    const angle = (p / 5) * Math.PI * 2;
-                    petalMesh.position.set(x, y, 0);
-                    petalMesh.rotation.z = angle;
-                    const scale = 0.7 + Math.random() * 0.4;
-                    petalMesh.scale.set(scale, scale, 1);
-
-                    flowerGroupRef.current.add(petalMesh);
-                  }
-                }
-             } else if (type === 4) { // BUG - Use colorScheme
+             } else if (type === 4) { // BUG
                 colors[idx * 3] = randomize(colorScheme.bug.r);
                 colors[idx * 3 + 1] = randomize(colorScheme.bug.g);
                 colors[idx * 3 + 2] = randomize(colorScheme.bug.b);
              }
-             return;
+             if (j === particleCount - 1) return; // Only spawn what we need
          }
      }
   };
@@ -568,6 +480,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
         const x = positions[i * 3];
         const y = positions[i * 3 + 1];
+        const z = positions[i * 3 + 2];
 
         // Draw HUD for this head
         if (ctx) {
@@ -604,8 +517,8 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
         positions[i * 3 + 1] += velocities[i * 3 + 1];
 
         // Leave Vine (less frequently for cleaner stems)
-        if (Math.random() < 0.4) {
-            spawnStatic(x, y, 2);
+        if (Math.random() < 0.3) {
+            spawnStatic(x, y, 2, z);
         }
 
         // Organic random walk - allow curving, bending, drooping
@@ -620,21 +533,20 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
         velocities[i * 3 + 1] *= 0.96;
 
         // Bloom
-        if (Math.random() < 0.03) {
-            spawnStatic(x + (Math.random()-0.5)*15, y + (Math.random()-0.5)*15, 3);
+        if (Math.random() < 0.04) {
+            spawnStatic(x + (Math.random()-0.5)*10, y + (Math.random()-0.5)*10, 3, z);
         }
 
         // Spawn bugs (small chance)
-        if (Math.random() < 0.02) {
-            spawnStatic(x + (Math.random()-0.5)*30, y + (Math.random()-0.5)*30, 4);
+        if (Math.random() < 0.015) {
+            spawnStatic(x + (Math.random()-0.5)*20, y + (Math.random()-0.5)*20, 4, z);
         }
 
-        life[i] -= 0.015;
+        life[i] -= 0.012;
         if (life[i] <= 0) {
              types[i] = 0; // Die
-             // Final Cluster
-             spawnStatic(x, y, 3);
-             spawnStatic(x+5, y+5, 3);
+             // Final flower cluster
+             spawnStatic(x, y, 3, z);
         } else {
              nextActiveHeads.push(i);
         }
