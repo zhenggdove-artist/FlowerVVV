@@ -51,9 +51,9 @@ const colorSchemes: ColorScheme[] = [
   }
 ];
 
-// Get color scheme based on click count
+// Get color scheme based on click count (every 5 clicks for testing)
 const getColorScheme = (clickCount: number): ColorScheme => {
-  const schemeIndex = Math.floor((clickCount - 1) / 10) % colorSchemes.length;
+  const schemeIndex = Math.floor((clickCount - 1) / 5) % colorSchemes.length;
   return colorSchemes[schemeIndex];
 };
 
@@ -316,12 +316,12 @@ const App: React.FC = () => {
     const newClickCount = viciClickCount + 1;
     setViciClickCount(newClickCount);
 
-    // Change color every 10 clicks
-    if ((newClickCount - 1) % 10 === 0) {
+    // Change color every 5 clicks (for testing)
+    if ((newClickCount - 1) % 5 === 0) {
       const newColorScheme = getColorScheme(newClickCount);
       setCurrentColorScheme(newColorScheme);
-      const schemeName = ['Pink', 'Yellow', 'Purple', 'Red', 'Blue', 'White'][Math.floor((newClickCount - 1) / 10) % 6];
-      console.log(`🎨 Color scheme changed to ${schemeName} at click ${newClickCount}:`, newColorScheme);
+      const schemeName = ['Pink', 'Yellow', 'Purple', 'Red', 'Blue', 'White'][Math.floor((newClickCount - 1) / 5) % 6];
+      console.log(`🎨 COLOR CHANGED to ${schemeName} at click ${newClickCount}:`, newColorScheme);
     }
 
     // IF IDLE: Capture and detect heads

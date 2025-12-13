@@ -157,12 +157,15 @@ const flowerFragmentShader = `
 const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, active, growthTrigger, width, height, colorScheme }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const hudCanvasRef = useRef<HTMLCanvasElement>(null);
-  
+
   // Three.js Refs
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const frameIdRef = useRef<number>(0);
+
+  // Store current color scheme in ref to avoid closure issues
+  const colorSchemeRef = useRef<ColorScheme>(colorScheme);
 
   // Edge Detection Data
   const edgePointsRef = useRef<Float32Array | null>(null); // [x, y, x, y...]
@@ -195,6 +198,12 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
   const startTimeRef = useRef<number>(Date.now());
   const zLayerCounterRef = useRef<number>(0); // Counter for Z layering
+
+  // Update color scheme ref whenever prop changes
+  useEffect(() => {
+    colorSchemeRef.current = colorScheme;
+    console.log('🎨 Color scheme ref updated:', colorScheme);
+  }, [colorScheme]);
 
   // --- FACE REGION PROCESSING: GENERATE POINTS FROM DETECTED FACES ---
   useEffect(() => {
@@ -403,9 +412,9 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
             velocities[i * 3 + 1] = Math.sin(angle) * speed;
 
             // IMPORTANT: Use current colorScheme for new plants
-            colors[i * 3] = colorScheme.head.r;
-            colors[i * 3 + 1] = colorScheme.head.g;
-            colors[i * 3 + 2] = colorScheme.head.b;
+            colors[i * 3] = colorSchemeRef.current.head.r;
+            colors[i * 3 + 1] = colorSchemeRef.current.head.g;
+            colors[i * 3 + 2] = colorSchemeRef.current.head.b;
 
             activeHeads.push(i); // Track this head
             spawned++;
@@ -442,9 +451,9 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
      // DEBUG: Log flower color when spawning
      if (type === 3) {
        console.log('🌸 Spawning flower with color:', {
-         r: colorScheme.flower.r,
-         g: colorScheme.flower.g,
-         b: colorScheme.flower.b,
+         r: colorSchemeRef.current.flower.r,
+         g: colorSchemeRef.current.flower.g,
+         b: colorSchemeRef.current.flower.b,
          z: z
        });
      }
@@ -459,17 +468,17 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
              life[idx] = -1;
 
              if (type === 2) { // VINE BODY
-                colors[idx * 3] = randomize(colorScheme.vine.r);
-                colors[idx * 3 + 1] = randomize(colorScheme.vine.g);
-                colors[idx * 3 + 2] = randomize(colorScheme.vine.b);
+                colors[idx * 3] = randomize(colorSchemeRef.current.vine.r);
+                colors[idx * 3 + 1] = randomize(colorSchemeRef.current.vine.g);
+                colors[idx * 3 + 2] = randomize(colorSchemeRef.current.vine.b);
              } else if (type === 3) { // FLOWER
-                colors[idx * 3] = randomize(colorScheme.flower.r);
-                colors[idx * 3 + 1] = randomize(colorScheme.flower.g);
-                colors[idx * 3 + 2] = randomize(colorScheme.flower.b);
+                colors[idx * 3] = randomize(colorSchemeRef.current.flower.r);
+                colors[idx * 3 + 1] = randomize(colorSchemeRef.current.flower.g);
+                colors[idx * 3 + 2] = randomize(colorSchemeRef.current.flower.b);
              } else if (type === 4) { // BUG
-                colors[idx * 3] = randomize(colorScheme.bug.r);
-                colors[idx * 3 + 1] = randomize(colorScheme.bug.g);
-                colors[idx * 3 + 2] = randomize(colorScheme.bug.b);
+                colors[idx * 3] = randomize(colorSchemeRef.current.bug.r);
+                colors[idx * 3 + 1] = randomize(colorSchemeRef.current.bug.g);
+                colors[idx * 3 + 2] = randomize(colorSchemeRef.current.bug.b);
              }
              if (j === particleCount - 1) return; // Only spawn what we need
          }
