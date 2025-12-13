@@ -11,7 +11,19 @@ import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
 // ============================================
 type DetectionEngine = 'BLAZEFACE' | 'MEDIAPIPE';
 const DETECTION_ENGINE: DetectionEngine = 'MEDIAPIPE'; // Switch to 'MEDIAPIPE' to test
+const MEDIAPIPE_MODEL_FULL_RANGE = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_full_range/float16/1/blaze_face_full_range.tflite";
+const MEDIAPIPE_MODEL_SHORT_RANGE = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
 // ============================================
+
+type StatueMaterialAnalysis = {
+  isStatue: boolean;
+  reason: string;
+  saturation: number;
+  skinTone: number;
+  grayRatio: number;
+  texture: number;
+  signature: Uint8Array;
+};
 
 // Color schemes pool for random selection (紅橙黃綠藍靛紫)
 const colorSchemes: ColorScheme[] = [
@@ -74,6 +86,55 @@ const getRandomColorScheme = (): ColorScheme => {
   return colorSchemes[randomIndex];
 };
 
+// Expand bbox slightly to capture material context (hairline, shoulders, background)
+const padBoundingBox = (
+  bbox: { x: number; y: number; width: number; height: number },
+  video: HTMLVideoElement
+) => {
+  const padX = Math.min(bbox.width * 0.12, 18);
+  const padY = Math.min(bbox.height * 0.12, 18);
+  const x = Math.max(0, bbox.x - padX);
+  const y = Math.max(0, bbox.y - padY);
+  const x2 = Math.min(video.videoWidth, bbox.x + bbox.width + padX);
+  const y2 = Math.min(video.videoHeight, bbox.y + bbox.height + padY);
+  return {
+    x,
+    y,
+    width: Math.max(1, x2 - x),
+    height: Math.max(1, y2 - y)
+  };
+};
+
+const buildRegionSignature = (sourceCanvas: HTMLCanvasElement): Uint8Array => {
+  const signatureCanvas = document.createElement('canvas');
+  const signatureSize = 8;
+  signatureCanvas.width = signatureSize;
+  signatureCanvas.height = signatureSize;
+  const sigCtx = signatureCanvas.getContext('2d');
+  if (!sigCtx) return new Uint8Array();
+  sigCtx.drawImage(sourceCanvas, 0, 0, signatureSize, signatureSize);
+  const sigData = sigCtx.getImageData(0, 0, signatureSize, signatureSize).data;
+  const signature = new Uint8Array(signatureSize * signatureSize);
+  for (let i = 0; i < signature.length; i++) {
+    const idx = i * 4;
+    const r = sigData[idx];
+    const g = sigData[idx + 1];
+    const b = sigData[idx + 2];
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    signature[i] = Math.round(luma);
+  }
+  return signature;
+};
+
+const computeMotionScore = (prev: Uint8Array | undefined, current: Uint8Array) => {
+  if (!prev || prev.length !== current.length) return 0;
+  let diff = 0;
+  for (let i = 0; i < current.length; i++) {
+    diff += Math.abs(current[i] - prev[i]);
+  }
+  return diff / (current.length * 255);
+};
+
 // ============================================
 // STATUE MATERIAL DETECTION SYSTEM
 // ============================================
@@ -85,125 +146,133 @@ const getRandomColorScheme = (): ColorScheme => {
 const analyzeStatueMaterial = (
   video: HTMLVideoElement,
   bbox: { x: number; y: number; width: number; height: number }
-): { isStatue: boolean; reason: string; saturation: number; skinTone: number } => {
-  // Create temporary canvas to extract region
+): StatueMaterialAnalysis => {
   const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = bbox.width;
-  tempCanvas.height = bbox.height;
+  const width = Math.max(4, Math.round(bbox.width));
+  const height = Math.max(4, Math.round(bbox.height));
+  tempCanvas.width = width;
+  tempCanvas.height = height;
   const ctx = tempCanvas.getContext('2d', { willReadFrequently: true });
 
   if (!ctx) {
-    return { isStatue: false, reason: 'Canvas error', saturation: 0, skinTone: 0 };
+    return { isStatue: false, reason: 'Canvas error', saturation: 0, skinTone: 0, grayRatio: 0, texture: 0, signature: new Uint8Array() };
   }
 
-  // Draw the detected region
   ctx.drawImage(
     video,
     bbox.x, bbox.y, bbox.width, bbox.height,
-    0, 0, bbox.width, bbox.height
+    0, 0, width, height
   );
 
-  const imageData = ctx.getImageData(0, 0, bbox.width, bbox.height);
+  const imageData = ctx.getImageData(0, 0, width, height);
   const pixels = imageData.data;
 
   let totalSaturation = 0;
   let skinTonePixels = 0;
-  let totalPixels = 0;
+  let totalSamples = 0;
   let grayPixels = 0;
+  let lumaSum = 0;
+  let lumaSqSum = 0;
+  let edgeSum = 0;
 
-  // Sample pixels (every 4th pixel for performance)
-  for (let i = 0; i < pixels.length; i += 16) {  // RGBA format, skip 4 pixels
-    const r = pixels[i];
-    const g = pixels[i + 1];
-    const b = pixels[i + 2];
+  const stride = Math.max(1, Math.floor(Math.min(width, height) / 24));
 
-    // Convert RGB to HSV to get saturation
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    const delta = max - min;
+  for (let y = 0; y < height; y += stride) {
+    for (let x = 0; x < width; x += stride) {
+      const idx = (y * width + x) * 4;
+      const r = pixels[idx];
+      const g = pixels[idx + 1];
+      const b = pixels[idx + 2];
 
-    // Saturation in HSV (0-100%)
-    const saturation = max === 0 ? 0 : (delta / max) * 100;
-    totalSaturation += saturation;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const delta = max - min;
+      const saturation = max === 0 ? 0 : (delta / max) * 100;
+      totalSaturation += saturation;
 
-    // Check for human skin tone (RGB based detection)
-    // Human skin: R > G > B, with specific ratios
-    const isLikelySkin = (
-      r > 95 && g > 40 && b > 20 &&
-      r > g && g > b &&
-      Math.abs(r - g) > 15 &&
-      (r - g) > 15
-    );
+      const isSkinRGB = (
+        r > 95 && g > 40 && b > 20 &&
+        r > g && g > b &&
+        Math.abs(r - g) > 15
+      );
+      const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+      const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+      const isSkinYCbCr = cb >= 77 && cb <= 127 && cr >= 133 && cr <= 173;
+      if (isSkinRGB || isSkinYCbCr) {
+        skinTonePixels++;
+      }
 
-    if (isLikelySkin) {
-      skinTonePixels++;
+      const colorDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
+      if (colorDiff < 18) {
+        grayPixels++;
+      }
+
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      lumaSum += luma;
+      lumaSqSum += luma * luma;
+
+      if (x >= stride) {
+        const leftIdx = (y * width + (x - stride)) * 4;
+        const leftLuma = 0.299 * pixels[leftIdx] + 0.587 * pixels[leftIdx + 1] + 0.114 * pixels[leftIdx + 2];
+        edgeSum += Math.abs(luma - leftLuma);
+      }
+      if (y >= stride) {
+        const topIdx = ((y - stride) * width + x) * 4;
+        const topLuma = 0.299 * pixels[topIdx] + 0.587 * pixels[topIdx + 1] + 0.114 * pixels[topIdx + 2];
+        edgeSum += Math.abs(luma - topLuma);
+      }
+
+      totalSamples++;
     }
-
-    // Check for grayscale/metallic (R ≈ G ≈ B)
-    const colorDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
-    if (colorDiff < 15) {
-      grayPixels++;
-    }
-
-    totalPixels++;
   }
 
-  const avgSaturation = totalSaturation / totalPixels;
-  const skinToneRatio = skinTonePixels / totalPixels;
-  const grayRatio = grayPixels / totalPixels;
+  const avgSaturation = totalSaturation / Math.max(1, totalSamples);
+  const skinToneRatio = skinTonePixels / Math.max(1, totalSamples);
+  const grayRatio = grayPixels / Math.max(1, totalSamples);
+  const avgLuma = lumaSum / Math.max(1, totalSamples);
+  const lumaVariance = lumaSqSum / Math.max(1, totalSamples) - avgLuma * avgLuma;
+  const lumaStd = Math.sqrt(Math.max(0, lumaVariance));
+  const edgeDensity = edgeSum / (Math.max(1, totalSamples) * 255 * 2);
 
-  console.log(`    🎨 Material Analysis: saturation=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%`);
+  console.log(`    dYZ" Material Analysis: sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%, tex=${(edgeDensity * 100).toFixed(1)}%, lumaStd=${lumaStd.toFixed(1)}`);
 
-  // STATUE CRITERIA:
-  // 1. Low saturation (<25%) - statues are usually monochrome
-  // 2. Low skin tone ratio (<15%) - not human skin color
-  // 3. High gray ratio (>40%) - metallic/stone materials
+  const lowSaturation = avgSaturation < 38;
+  const veryLowSkin = skinToneRatio < 0.12;
+  const tintedButStone = avgSaturation < 55 && grayRatio > 0.45 && veryLowSkin;
+  const stoneTexture = edgeDensity > 0.08 || lumaStd > 18;
 
-  if (avgSaturation < 90 && skinToneRatio < 0.9) {
-    return {
-      isStatue: true,
-      reason: `Low saturation (${avgSaturation.toFixed(1)}%) + No skin tone`,
-      saturation: avgSaturation,
-      skinTone: skinToneRatio * 100
-    };
+  let isStatue = false;
+  let reason = '';
+
+  if (skinToneRatio > 0.18) {
+    isStatue = false;
+    reason = `Human skin detected (${(skinToneRatio * 100).toFixed(1)}%)`;
+  } else if ((lowSaturation && veryLowSkin && stoneTexture) || tintedButStone) {
+    isStatue = true;
+    reason = `Low saturation/gray + texture (sat=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%)`;
+  } else if (grayRatio > 0.55 && veryLowSkin) {
+    isStatue = true;
+    reason = `High gray ratio (${(grayRatio * 100).toFixed(1)}%)`;
+  } else if (lowSaturation && veryLowSkin) {
+    isStatue = true;
+    reason = 'Monochrome low-skin region';
+  } else {
+    isStatue = false;
+    reason = `Too colorful/skin-like (sat=${avgSaturation.toFixed(1)}%)`;
   }
 
-  if (grayRatio > 0.4 && skinToneRatio < 0.2) {
-    return {
-      isStatue: true,
-      reason: `Grayscale material (${(grayRatio * 100).toFixed(1)}%)`,
-      saturation: avgSaturation,
-      skinTone: skinToneRatio * 100
-    };
-  }
-
-  if (skinToneRatio > 0.3) {
-    return {
-      isStatue: false,
-      reason: `Human skin detected (${(skinToneRatio * 100).toFixed(1)}%)`,
-      saturation: avgSaturation,
-      skinTone: skinToneRatio * 100
-    };
-  }
-
-  // Edge case: medium saturation but no skin = possible colored statue
-  if (avgSaturation < 99 && skinToneRatio < 0.001) {
-    return {
-      isStatue: true,
-      reason: 'Colored statue (low saturation, no skin)',
-      saturation: avgSaturation,
-      skinTone: skinToneRatio * 100
-    };
-  }
+  const signature = buildRegionSignature(tempCanvas);
 
   return {
-    isStatue: false,
-    reason: `Too colorful (sat=${avgSaturation.toFixed(1)}%)`,
+    isStatue,
+    reason,
     saturation: avgSaturation,
-    skinTone: skinToneRatio * 100
+    skinTone: skinToneRatio * 100,
+    grayRatio: grayRatio * 100,
+    texture: edgeDensity * 100,
+    signature
   };
 };
-
 const App: React.FC = () => {
   console.log("###################################################");
   console.log(`APP.TSX: DUAL ENGINE MODE - ACTIVE: ${DETECTION_ENGINE}`);
@@ -250,6 +319,7 @@ const App: React.FC = () => {
     };
     timestamp: number;
   }>>([]);
+  const regionMotionHistoryRef = useRef<Map<string, { signature: Uint8Array; timestamp: number }>>(new Map());
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
@@ -274,9 +344,9 @@ const App: React.FC = () => {
       setStatusText("LOADING BLAZEFACE...");
 
       const blazeModel = await blazeface.load({
-        maxFaces: 100,
-        iouThreshold: 0.1,
-        scoreThreshold: 0.3
+        maxFaces: 150,
+        iouThreshold: 0.2,
+        scoreThreshold: 0.18
       });
 
       if (cancelled) return;
@@ -298,21 +368,36 @@ const App: React.FC = () => {
 
       if (cancelled) return false;
 
-      console.log("🔧 Creating FaceDetector with OPTIMIZED config...");
-      console.log("   - Model: blaze_face_short_range (optimized for accuracy)");
-      console.log("   - minDetectionConfidence: 0.65 (HIGH - reduces false positives)");
-      console.log("   - minSuppressionThreshold: 0.4 (strict NMS)");
+      console.log("🔧 Creating FaceDetector with WIDE-RANGE config (prefers small/far heads, falls back if needed)...");
+      console.log("   - Model: blaze_face_full_range (captures small distant heads)");
+      console.log("   - minDetectionConfidence: 0.40 (higher sensitivity, statue filters handle false positives)");
+      console.log("   - minSuppressionThreshold: 0.25 (looser NMS to keep weak boxes)");
 
-      const detector = await FaceDetector.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-          delegate: "GPU"
-        },
-        runningMode: "VIDEO",
-        minDetectionConfidence: 0.65,  // CRITICAL: 65% confidence minimum (was 0.3)
-        minSuppressionThreshold: 0.4   // Stricter Non-Maximum Suppression
-      });
-      console.log("✅ FaceDetector created with HIGH accuracy settings");
+      let detector: FaceDetector | null = null;
+      try {
+        detector = await FaceDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: MEDIAPIPE_MODEL_FULL_RANGE,
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          minDetectionConfidence: 0.4,
+          minSuppressionThreshold: 0.25
+        });
+        console.log("✅ FaceDetector created with FULL-RANGE model");
+      } catch (err) {
+        console.warn("⚠️ Full-range model failed, falling back to short-range:", err);
+        detector = await FaceDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: MEDIAPIPE_MODEL_SHORT_RANGE,
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          minDetectionConfidence: 0.45,
+          minSuppressionThreshold: 0.3
+        });
+        console.log("✅ FaceDetector created with SHORT-RANGE fallback");
+      }
 
       if (cancelled) return false;
 
@@ -531,7 +616,7 @@ const App: React.FC = () => {
             console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] confidence=${confidence.toFixed(2)}`);
 
             // ============================================
-            // ENHANCED 6-LAYER FILTER SYSTEM (MediaPipe Optimized)
+            // ENHANCED 8-LAYER FILTER SYSTEM (MediaPipe Optimized)
             // ============================================
 
             // Filter 1: Reject detections that are too large (likely false positives)
@@ -543,18 +628,18 @@ const App: React.FC = () => {
             }
 
             // Filter 2: Reject detections that are too small (noise)
-            // For MediaPipe: minimum 3% of video width or 15 pixels (stricter)
+            // For MediaPipe: minimum 1.5% of video width or 12 pixels (allow distant statues)
             const minFaceSize = DETECTION_ENGINE === 'MEDIAPIPE'
-              ? Math.max(15, video.videoWidth * 0.03)
-              : Math.max(10, video.videoWidth * 0.02);
+              ? Math.max(12, video.videoWidth * 0.015)
+              : Math.max(8, video.videoWidth * 0.01);
             if (width < minFaceSize || height < minFaceSize) {
               console.log(`  ❌ FILTER 2 FAIL: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize.toFixed(0)})`);
               return;
             }
 
             // Filter 3: Reject detections with low confidence
-            // MediaPipe: Match minDetectionConfidence (0.65), BlazeFace: 0.3
-            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.65 : 0.3;
+            // MediaPipe: Match relaxed minDetectionConfidence (0.40), BlazeFace: 0.20
+            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.4 : 0.2;
             if (confidence < minConfidence) {
               console.log(`  ❌ FILTER 3 FAIL: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}%)`);
               return;
@@ -602,7 +687,8 @@ const App: React.FC = () => {
             // Filter 7: STATUE MATERIAL DETECTION (CRITICAL)
             // ============================================
             // Analyze the region to determine if it's a statue or human
-            const materialAnalysis = analyzeStatueMaterial(video, { x, y, width, height });
+            const paddedBox = padBoundingBox({ x, y, width, height }, video);
+            const materialAnalysis = analyzeStatueMaterial(video, paddedBox);
 
             console.log(`    🗿 Statue check: ${materialAnalysis.isStatue ? '✅ IS STATUE' : '❌ IS HUMAN'}`);
             console.log(`    📊 Reason: ${materialAnalysis.reason}`);
@@ -612,7 +698,21 @@ const App: React.FC = () => {
               return;
             }
 
-            console.log(`  ✅✅ FINAL ACCEPTANCE: Face ${index + 1} is a STATUE - passed ALL filters including material check`);
+            // ============================================
+            // Filter 8: Motion/liveness rejection (statues stay still)
+            // ============================================
+            const motionKey = `${Math.round(x)}_${Math.round(y)}_${Math.round(width)}_${Math.round(height)}`;
+            const previousSignature = regionMotionHistoryRef.current.get(motionKey);
+            const motionScore = computeMotionScore(previousSignature?.signature, materialAnalysis.signature);
+            const applyMotionGate = materialAnalysis.skinTone > 5 || materialAnalysis.saturation > 30;
+            if (applyMotionGate && motionScore > 0.12) {
+              console.log(`  ❌ FILTER 8 FAIL: Region moved too much (${(motionScore * 100).toFixed(1)}%) - likely human/liveness`);
+              regionMotionHistoryRef.current.set(motionKey, { signature: materialAnalysis.signature.slice(), timestamp: currentTime });
+              return;
+            }
+            regionMotionHistoryRef.current.set(motionKey, { signature: materialAnalysis.signature.slice(), timestamp: currentTime });
+
+            console.log(`  ✅✅ FINAL ACCEPTANCE: Face ${index + 1} is a STATUE - passed ALL filters including material + motion checks`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
@@ -666,6 +766,13 @@ const App: React.FC = () => {
           detectedRegionsHistoryRef.current = detectedRegionsHistoryRef.current.filter(
             item => currentTime - item.timestamp < 2000
           );
+
+          // Drop stale motion signatures (keep memory bounded)
+          regionMotionHistoryRef.current.forEach((entry, key) => {
+            if (currentTime - entry.timestamp > 4000) {
+              regionMotionHistoryRef.current.delete(key);
+            }
+          });
 
           // Get unique regions to display (merge current detections with recent history)
           const regionsToDisplay: typeof detectedRegionsForDisplay = [];
@@ -735,9 +842,9 @@ const App: React.FC = () => {
       }
     };
 
-    // Run detection every 200ms (faster response, still efficient)
+    // Run detection every 150ms (faster response, still efficient)
     detectFaces();
-    const intervalId = setInterval(detectFaces, 200);
+    const intervalId = setInterval(detectFaces, 150);
     detectionIntervalRef.current = intervalId as any;
 
     return () => {
