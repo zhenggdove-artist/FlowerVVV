@@ -74,9 +74,140 @@ const getRandomColorScheme = (): ColorScheme => {
   return colorSchemes[randomIndex];
 };
 
+// ============================================
+// STATUE MATERIAL DETECTION SYSTEM
+// ============================================
+
+/**
+ * Analyzes if a detected region is a STATUE (not a real human face)
+ * Statues have: low saturation, uniform color, non-skin tones
+ */
+const analyzeStatueMaterial = (
+  video: HTMLVideoElement,
+  bbox: { x: number; y: number; width: number; height: number }
+): { isStatue: boolean; reason: string; saturation: number; skinTone: number } => {
+  // Create temporary canvas to extract region
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = bbox.width;
+  tempCanvas.height = bbox.height;
+  const ctx = tempCanvas.getContext('2d', { willReadFrequently: true });
+
+  if (!ctx) {
+    return { isStatue: false, reason: 'Canvas error', saturation: 0, skinTone: 0 };
+  }
+
+  // Draw the detected region
+  ctx.drawImage(
+    video,
+    bbox.x, bbox.y, bbox.width, bbox.height,
+    0, 0, bbox.width, bbox.height
+  );
+
+  const imageData = ctx.getImageData(0, 0, bbox.width, bbox.height);
+  const pixels = imageData.data;
+
+  let totalSaturation = 0;
+  let skinTonePixels = 0;
+  let totalPixels = 0;
+  let grayPixels = 0;
+
+  // Sample pixels (every 4th pixel for performance)
+  for (let i = 0; i < pixels.length; i += 16) {  // RGBA format, skip 4 pixels
+    const r = pixels[i];
+    const g = pixels[i + 1];
+    const b = pixels[i + 2];
+
+    // Convert RGB to HSV to get saturation
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+
+    // Saturation in HSV (0-100%)
+    const saturation = max === 0 ? 0 : (delta / max) * 100;
+    totalSaturation += saturation;
+
+    // Check for human skin tone (RGB based detection)
+    // Human skin: R > G > B, with specific ratios
+    const isLikelySkin = (
+      r > 95 && g > 40 && b > 20 &&
+      r > g && g > b &&
+      Math.abs(r - g) > 15 &&
+      (r - g) > 15
+    );
+
+    if (isLikelySkin) {
+      skinTonePixels++;
+    }
+
+    // Check for grayscale/metallic (R ≈ G ≈ B)
+    const colorDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
+    if (colorDiff < 15) {
+      grayPixels++;
+    }
+
+    totalPixels++;
+  }
+
+  const avgSaturation = totalSaturation / totalPixels;
+  const skinToneRatio = skinTonePixels / totalPixels;
+  const grayRatio = grayPixels / totalPixels;
+
+  console.log(`    🎨 Material Analysis: saturation=${avgSaturation.toFixed(1)}%, skin=${(skinToneRatio * 100).toFixed(1)}%, gray=${(grayRatio * 100).toFixed(1)}%`);
+
+  // STATUE CRITERIA:
+  // 1. Low saturation (<25%) - statues are usually monochrome
+  // 2. Low skin tone ratio (<15%) - not human skin color
+  // 3. High gray ratio (>40%) - metallic/stone materials
+
+  if (avgSaturation < 25 && skinToneRatio < 0.15) {
+    return {
+      isStatue: true,
+      reason: `Low saturation (${avgSaturation.toFixed(1)}%) + No skin tone`,
+      saturation: avgSaturation,
+      skinTone: skinToneRatio * 100
+    };
+  }
+
+  if (grayRatio > 0.4 && skinToneRatio < 0.2) {
+    return {
+      isStatue: true,
+      reason: `Grayscale material (${(grayRatio * 100).toFixed(1)}%)`,
+      saturation: avgSaturation,
+      skinTone: skinToneRatio * 100
+    };
+  }
+
+  if (skinToneRatio > 0.25) {
+    return {
+      isStatue: false,
+      reason: `Human skin detected (${(skinToneRatio * 100).toFixed(1)}%)`,
+      saturation: avgSaturation,
+      skinTone: skinToneRatio * 100
+    };
+  }
+
+  // Edge case: medium saturation but no skin = possible colored statue
+  if (avgSaturation < 35 && skinToneRatio < 0.15) {
+    return {
+      isStatue: true,
+      reason: 'Colored statue (low saturation, no skin)',
+      saturation: avgSaturation,
+      skinTone: skinToneRatio * 100
+    };
+  }
+
+  return {
+    isStatue: false,
+    reason: `Too colorful (sat=${avgSaturation.toFixed(1)}%)`,
+    saturation: avgSaturation,
+    skinTone: skinToneRatio * 100
+  };
+};
+
 const App: React.FC = () => {
   console.log("###################################################");
   console.log(`APP.TSX: DUAL ENGINE MODE - ACTIVE: ${DETECTION_ENGINE}`);
+  console.log(`🗿 STATUE DETECTION: ENABLED (rejecting human faces)`);
   console.log("###################################################");
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -201,8 +332,8 @@ const App: React.FC = () => {
         if (cancelled) return;
 
         setIsDetectorReady(true);
-        setStatusText("READY - Point camera at faces");
-        console.log(`✅ ${DETECTION_ENGINE} is ready!`);
+        setStatusText("READY - Point camera at STATUES");
+        console.log(`✅ ${DETECTION_ENGINE} is ready for STATUE detection!`);
       } catch (err) {
         console.error(`❌ Failed to initialize ${DETECTION_ENGINE}:`, err);
         console.error("Error details:", err);
@@ -465,7 +596,23 @@ const App: React.FC = () => {
               return;
             }
 
-            console.log(`  ✅ ACCEPTED: Face ${index + 1} passed all 6 filters`);
+            console.log(`  ✅ PASSED geometric filters 1-6`);
+
+            // ============================================
+            // Filter 7: STATUE MATERIAL DETECTION (CRITICAL)
+            // ============================================
+            // Analyze the region to determine if it's a statue or human
+            const materialAnalysis = analyzeStatueMaterial(video, { x, y, width, height });
+
+            console.log(`    🗿 Statue check: ${materialAnalysis.isStatue ? '✅ IS STATUE' : '❌ IS HUMAN'}`);
+            console.log(`    📊 Reason: ${materialAnalysis.reason}`);
+
+            if (!materialAnalysis.isStatue) {
+              console.log(`  ❌ FILTER 7 FAIL: REJECTED - ${materialAnalysis.reason} (we only want statues)`);
+              return;
+            }
+
+            console.log(`  ✅✅ FINAL ACCEPTANCE: Face ${index + 1} is a STATUE - passed ALL filters including material check`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
@@ -577,10 +724,10 @@ const App: React.FC = () => {
               }, 50);
             }
 
-            setStatusText(`${headRegions.length} DETECTED - CAPTURING...`);
+            setStatusText(`${headRegions.length} STATUE(S) DETECTED - CAPTURING...`);
           } else {
             detectionStableCountRef.current = 0;
-            setStatusText("Point camera at faces");
+            setStatusText("Point camera at STATUES");
           }
 
       } catch (err) {
@@ -625,10 +772,10 @@ const App: React.FC = () => {
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
 
-        // Check if at least one face is detected
+        // Check if at least one statue is detected
         if (detectedHeads.length === 0) {
-          setStatusText("NO FACES DETECTED");
-          setTimeout(() => setStatusText("Point camera at faces"), 2000);
+          setStatusText("NO STATUES DETECTED");
+          setTimeout(() => setStatusText("Point camera at STATUES"), 2000);
           return;
         }
 
@@ -680,7 +827,7 @@ const App: React.FC = () => {
     setAnalysisResult(null);
     setGrowthTrigger(0);
     setDetectedHeads([]);
-    setStatusText("Point camera at faces");
+    setStatusText("Point camera at STATUES");
     detectionStableCountRef.current = 0;
     autoCaptureFiredRef.current = false;
   };
