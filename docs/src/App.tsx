@@ -156,7 +156,7 @@ const App: React.FC = () => {
     };
 
     const initMediaPipe = async () => {
-      console.log("🟣 Initializing MediaPipe FaceDetector...");
+      console.log("🟣 Initializing MediaPipe FaceDetector with OPTIMIZED settings...");
       setStatusText("LOADING MEDIAPIPE...");
 
       console.log("📦 Loading MediaPipe Vision wasm files...");
@@ -167,17 +167,21 @@ const App: React.FC = () => {
 
       if (cancelled) return false;
 
-      console.log("🔧 Creating FaceDetector with config...");
+      console.log("🔧 Creating FaceDetector with OPTIMIZED config...");
+      console.log("   - Model: blaze_face_short_range (optimized for accuracy)");
+      console.log("   - minDetectionConfidence: 0.65 (HIGH - reduces false positives)");
+      console.log("   - minSuppressionThreshold: 0.4 (strict NMS)");
+
       const detector = await FaceDetector.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
           delegate: "GPU"
         },
         runningMode: "VIDEO",
-        minDetectionConfidence: 0.3,
-        minSuppressionThreshold: 0.3
+        minDetectionConfidence: 0.65,  // CRITICAL: 65% confidence minimum (was 0.3)
+        minSuppressionThreshold: 0.4   // Stricter Non-Maximum Suppression
       });
-      console.log("✅ FaceDetector created");
+      console.log("✅ FaceDetector created with HIGH accuracy settings");
 
       if (cancelled) return false;
 
@@ -395,39 +399,73 @@ const App: React.FC = () => {
 
             console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] confidence=${confidence.toFixed(2)}`);
 
-            // FILTER OUT INVALID DETECTIONS
+            // ============================================
+            // ENHANCED 6-LAYER FILTER SYSTEM (MediaPipe Optimized)
+            // ============================================
+
             // Filter 1: Reject detections that are too large (likely false positives)
-            // A valid face should not exceed 70% of video width or height
-            const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * 0.7;
+            // MediaPipe more strict: max 50% of video dimension (was 70%)
+            const maxFaceSize = Math.min(video.videoWidth, video.videoHeight) * (DETECTION_ENGINE === 'MEDIAPIPE' ? 0.5 : 0.7);
             if (width > maxFaceSize || height > maxFaceSize) {
-              console.log(`  ❌ REJECTED: Face ${index + 1} too large (${width.toFixed(0)}x${height.toFixed(0)} exceeds ${maxFaceSize.toFixed(0)})`);
+              console.log(`  ❌ FILTER 1 FAIL: Face ${index + 1} too large (${width.toFixed(0)}x${height.toFixed(0)} exceeds ${maxFaceSize.toFixed(0)})`);
               return;
             }
 
             // Filter 2: Reject detections that are too small (noise)
-            // For distant faces, use 2% of video width or minimum 10 pixels
-            const minFaceSize = Math.max(10, video.videoWidth * 0.02);
+            // For MediaPipe: minimum 3% of video width or 15 pixels (stricter)
+            const minFaceSize = DETECTION_ENGINE === 'MEDIAPIPE'
+              ? Math.max(15, video.videoWidth * 0.03)
+              : Math.max(10, video.videoWidth * 0.02);
             if (width < minFaceSize || height < minFaceSize) {
-              console.log(`  ❌ REJECTED: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize.toFixed(0)})`);
+              console.log(`  ❌ FILTER 2 FAIL: Face ${index + 1} too small (${width.toFixed(0)}x${height.toFixed(0)} below ${minFaceSize.toFixed(0)})`);
               return;
             }
 
-            // Filter 3: Reject detections with very low confidence
-            // AGGRESSIVE: Match BlazeFace scoreThreshold (0.3)
-            if (confidence < 0.3) {
-              console.log(`  ❌ REJECTED: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}%)`);
+            // Filter 3: Reject detections with low confidence
+            // MediaPipe: Match minDetectionConfidence (0.65), BlazeFace: 0.3
+            const minConfidence = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.65 : 0.3;
+            if (confidence < minConfidence) {
+              console.log(`  ❌ FILTER 3 FAIL: Face ${index + 1} low confidence (${(confidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}%)`);
               return;
             }
 
             // Filter 4: Aspect ratio check - faces should be roughly square to oval
-            // Reject extremely wide or tall detections
+            // MediaPipe stricter: 1.8:1 max (was 2.5:1)
             const aspectRatio = Math.max(width, height) / Math.min(width, height);
-            if (aspectRatio > 2.5) {
-              console.log(`  ❌ REJECTED: Face ${index + 1} invalid aspect ratio (${aspectRatio.toFixed(2)})`);
+            const maxAspectRatio = DETECTION_ENGINE === 'MEDIAPIPE' ? 1.8 : 2.5;
+            if (aspectRatio > maxAspectRatio) {
+              console.log(`  ❌ FILTER 4 FAIL: Face ${index + 1} invalid aspect ratio (${aspectRatio.toFixed(2)} > ${maxAspectRatio})`);
               return;
             }
 
-            console.log(`  ✅ ACCEPTED: Face ${index + 1} passed all filters`);
+            // Filter 5: Position sanity check - reject detections at extreme edges
+            // Faces at very edge of frame are often false positives
+            const edgeMargin = DETECTION_ENGINE === 'MEDIAPIPE' ? 0.05 : 0; // 5% margin for MediaPipe
+            const minX = video.videoWidth * edgeMargin;
+            const maxX = video.videoWidth * (1 - edgeMargin);
+            const minY = video.videoHeight * edgeMargin;
+            const maxY = video.videoHeight * (1 - edgeMargin);
+
+            const centerX = x + width / 2;
+            const centerY = y + height / 2;
+
+            if (centerX < minX || centerX > maxX || centerY < minY || centerY > maxY) {
+              console.log(`  ❌ FILTER 5 FAIL: Face ${index + 1} too close to edge (center: ${centerX.toFixed(0)}, ${centerY.toFixed(0)})`);
+              return;
+            }
+
+            // Filter 6: Size consistency check - reject extremely different width/height
+            // Real faces have relatively consistent proportions
+            const sizeDiff = Math.abs(width - height);
+            const avgSize = (width + height) / 2;
+            const sizeVariance = sizeDiff / avgSize;
+
+            if (sizeVariance > 0.4 && DETECTION_ENGINE === 'MEDIAPIPE') {
+              console.log(`  ❌ FILTER 6 FAIL: Face ${index + 1} inconsistent dimensions (variance: ${(sizeVariance * 100).toFixed(0)}%)`);
+              return;
+            }
+
+            console.log(`  ✅ ACCEPTED: Face ${index + 1} passed all 6 filters`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
