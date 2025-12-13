@@ -194,6 +194,7 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
   } | null>(null);
 
   const startTimeRef = useRef<number>(Date.now());
+  const zLayerCounterRef = useRef<number>(0); // Counter for Z layering
 
   // --- FACE REGION PROCESSING: GENERATE POINTS FROM DETECTED FACES ---
   useEffect(() => {
@@ -357,8 +358,10 @@ const PlantGrowth: React.FC<PlantGrowthProps> = ({ analysis, capturedImage, acti
 
     if (!edgePoints && !surfacePoints) return;
 
-    // Calculate Z depth for new plants (higher = more in front)
-    const baseZ = Date.now() / 10000; // Slowly increasing Z over time
+    // Calculate Z depth for new plants - use small increments
+    // Camera range is 1-1000, use 0-50 for safety
+    zLayerCounterRef.current = (zLayerCounterRef.current + 0.1) % 50;
+    const baseZ = zLayerCounterRef.current;
 
     let spawned = 0;
     for (let i = 0; i < MAX_PARTICLES; i++) {
