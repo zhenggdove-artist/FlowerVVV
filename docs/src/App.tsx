@@ -5,290 +5,60 @@ import { GameState, AnalysisResult, FaceRegion, ColorScheme } from './types.ts';
 import * as blazeface from '@tensorflow-models/blazeface';
 import '@tensorflow/tfjs';
 
-// Helper: Calculate IoU (Intersection over Union) between two bounding boxes
-function calculateIoU(box1: any, box2: any): number {
-  const [x1, y1] = box1.topLeft;
-  const [x1_2, y1_2] = box1.bottomRight;
-  const [x2, y2] = box2.topLeft;
-  const [x2_2, y2_2] = box2.bottomRight;
-
-  const xA = Math.max(x1, x2);
-  const yA = Math.max(y1, y2);
-  const xB = Math.min(x1_2, x2_2);
-  const yB = Math.min(y1_2, y2_2);
-
-  const intersectionArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
-  const box1Area = (x1_2 - x1) * (y1_2 - y1);
-  const box2Area = (x2_2 - x2) * (y2_2 - y2);
-  const unionArea = box1Area + box2Area - intersectionArea;
-
-  return intersectionArea / unionArea;
-}
-
-// Helper: Detect OBVIOUS human skin (very conservative to avoid filtering statues)
-function hasObviousHumanSkin(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number
-): { hasSkin: boolean; skinPercentage: number } {
-  try {
-    const sampleX = Math.max(0, x + width * 0.25);
-    const sampleY = Math.max(0, y + height * 0.25);
-    const sampleW = Math.min(width * 0.5, ctx.canvas.width - sampleX);
-    const sampleH = Math.min(height * 0.5, ctx.canvas.height - sampleY);
-
-    if (sampleW <= 0 || sampleH <= 0) return { hasSkin: false, skinPercentage: 0 };
-
-    const imageData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
-    const data = imageData.data;
-
-    let skinPixels = 0;
-    let totalPixels = 0;
-
-    // Sample pixels
-    for (let i = 0; i < data.length; i += 16) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-
-      totalPixels++;
-
-      // VERY CONSERVATIVE skin detection - only obvious human skin tones
-      // Exclude metallic/bronze colors (which have higher saturation in certain channels)
-
-      // Typical human skin: pinkish with moderate saturation
-      const isPinkishHumanSkin = (r > 150 && r < 255) &&
-                                 (g > 100 && g < 220) &&
-                                 (b > 90 && b < 200) &&
-                                 (r > g && g > b) &&
-                                 (r - g > 20 && r - g < 80) &&
-                                 (g - b > 10 && g - b < 50);
-
-      // Beige/tan human skin
-      const isBeigeHumanSkin = (r > 180 && r < 255) &&
-                               (g > 140 && g < 210) &&
-                               (b > 100 && b < 180) &&
-                               (r - b > 30 && r - b < 100);
-
-      if (isPinkishHumanSkin || isBeigeHumanSkin) {
-        skinPixels++;
-      }
-    }
-
-    const skinPercentage = totalPixels > 0 ? skinPixels / totalPixels : 0;
-
-    // Much higher threshold: only if >40% clearly human skin
-    return {
-      hasSkin: skinPercentage > 0.4,
-      skinPercentage
-    };
-  } catch (err) {
-    return { hasSkin: false, skinPercentage: 0 };
-  }
-}
-
-// Helper: Advanced statue detection - analyzes color and texture
-function analyzeStatueCharacteristics(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number
-): { isStatue: boolean; saturation: number; colorVariance: number; confidence: number; hasSkin: boolean } {
-  try {
-    // FIRST: Check for OBVIOUS human skin tone only
-    const skinCheck = hasObviousHumanSkin(ctx, x, y, width, height);
-    if (skinCheck.hasSkin) {
-      // Very obvious human skin → probably human → NOT a statue
-      return {
-        isStatue: false,
-        saturation: 1.0,
-        colorVariance: 0,
-        confidence: 0,
-        hasSkin: true
-      };
-    }
-
-    // Sample center region (avoid edges)
-    const sampleX = Math.max(0, x + width * 0.25);
-    const sampleY = Math.max(0, y + height * 0.25);
-    const sampleW = Math.min(width * 0.5, ctx.canvas.width - sampleX);
-    const sampleH = Math.min(height * 0.5, ctx.canvas.height - sampleY);
-
-    if (sampleW <= 0 || sampleH <= 0) {
-      return { isStatue: false, saturation: 0.5, colorVariance: 0.5, confidence: 0, hasSkin: false };
-    }
-
-    const imageData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
-    const data = imageData.data;
-
-    let totalSaturation = 0;
-    let totalHue = 0;
-    let totalValue = 0;
-    let pixelCount = 0;
-    const hues: number[] = [];
-    const values: number[] = [];
-
-    // Sample every 4th pixel for performance
-    for (let i = 0; i < data.length; i += 16) {
-      const r = data[i] / 255;
-      const g = data[i + 1] / 255;
-      const b = data[i + 2] / 255;
-
-      // Calculate HSV
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const delta = max - min;
-
-      // Saturation
-      const saturation = max === 0 ? 0 : delta / max;
-      totalSaturation += saturation;
-
-      // Hue
-      let hue = 0;
-      if (delta !== 0) {
-        if (max === r) hue = ((g - b) / delta) % 6;
-        else if (max === g) hue = (b - r) / delta + 2;
-        else hue = (r - g) / delta + 4;
-        hue = (hue * 60 + 360) % 360;
-      }
-      hues.push(hue);
-
-      // Value (brightness)
-      values.push(max);
-      totalValue += max;
-
-      pixelCount++;
-    }
-
-    if (pixelCount === 0) {
-      return { isStatue: false, saturation: 0.5, colorVariance: 0.5, confidence: 0, hasSkin: false };
-    }
-
-    const avgSaturation = totalSaturation / pixelCount;
-    const avgValue = totalValue / pixelCount;
-
-    // Calculate color variance (hue variance)
-    const avgHue = hues.reduce((sum, h) => sum + h, 0) / hues.length;
-    const hueVariance = hues.reduce((sum, h) => {
-      const diff = Math.min(Math.abs(h - avgHue), 360 - Math.abs(h - avgHue));
-      return sum + diff * diff;
-    }, 0) / hues.length;
-
-    // Calculate brightness variance
-    const brightnessVariance = values.reduce((sum, v) => sum + Math.pow(v - avgValue, 2), 0) / values.length;
-
-    // BALANCED STATUE CRITERIA for various materials (metal, stone, marble, concrete):
-    // 1. Relatively low saturation (< 0.45) - allows bronze, copper, painted statues
-    // 2. Moderate hue variance (< 600) - allows some color variation in materials
-    // 3. Smooth to moderate surface (< 0.08) - allows texture in stone/concrete
-
-    const lowSaturation = avgSaturation < 0.45;    // Relaxed for bronze/copper statues
-    const moderatelyUniform = hueVariance < 600;    // Relaxed for material variations
-    const reasonablySmooth = brightnessVariance < 0.08; // Relaxed for stone texture
-
-    // Calculate confidence score
-    let confidence = 0;
-    if (lowSaturation) confidence += 0.4;
-    if (moderatelyUniform) confidence += 0.3;
-    if (reasonablySmooth) confidence += 0.3;
-
-    // BALANCED Decision: 2 out of 3 criteria (flexible for various statue materials)
-    const isStatue = (lowSaturation && moderatelyUniform) ||
-                     (lowSaturation && reasonablySmooth) ||
-                     (moderatelyUniform && reasonablySmooth);
-
-    return {
-      isStatue,
-      saturation: avgSaturation,
-      colorVariance: hueVariance,
-      confidence,
-      hasSkin: false
-    };
-  } catch (err) {
-    return { isStatue: false, saturation: 0.5, colorVariance: 0, confidence: 0, hasSkin: false };
-  }
-}
-
-// Helper: Merge overlapping detections from multi-scale detection
-function mergeOverlappingDetections(detections: any[], iouThreshold: number = 0.4): any[] {
-  if (detections.length === 0) return [];
-
-  // Sort by confidence (probability)
-  const sorted = [...detections].sort((a, b) => {
-    const confA = a.probability ? a.probability[0] : 0.5;
-    const confB = b.probability ? b.probability[0] : 0.5;
-    return confB - confA;
-  });
-
-  const keep: any[] = [];
-
-  while (sorted.length > 0) {
-    const current = sorted.shift()!;
-    keep.push(current);
-
-    // Remove overlapping detections
-    const remaining = sorted.filter(det => {
-      const iou = calculateIoU(current, det);
-      return iou < iouThreshold; // Keep if IoU is below threshold
-    });
-
-    sorted.length = 0;
-    sorted.push(...remaining);
-  }
-
-  return keep;
-}
-
-// Color schemes pool for random selection
+// Color schemes pool for random selection (紅橙黃綠藍靛紫)
 const colorSchemes: ColorScheme[] = [
-  // Scheme 0: Pink
-  {
-    head: { r: 0.0, g: 1.0, b: 0.5 },
-    vine: { r: 0.05, g: 0.35, b: 0.15 },
-    flower: { r: 1.0, g: 0.1, b: 0.9 },
-    bug: { r: 1.0, g: 0.3, b: 0.8 }
-  },
-  // Scheme 1: Yellow/Orange
-  {
-    head: { r: 0.0, g: 1.0, b: 0.5 },
-    vine: { r: 0.1, g: 0.4, b: 0.1 },
-    flower: { r: 1.0, g: 0.8, b: 0.0 },
-    bug: { r: 1.0, g: 0.6, b: 0.0 }
-  },
-  // Scheme 2: Purple/Violet
-  {
-    head: { r: 0.0, g: 1.0, b: 0.5 },
-    vine: { r: 0.15, g: 0.3, b: 0.2 },
-    flower: { r: 0.6, g: 0.2, b: 1.0 },
-    bug: { r: 0.8, g: 0.3, b: 1.0 }
-  },
-  // Scheme 3: Red
+  // Scheme 0: Red (紅)
   {
     head: { r: 0.0, g: 1.0, b: 0.5 },
     vine: { r: 0.1, g: 0.35, b: 0.1 },
     flower: { r: 1.0, g: 0.1, b: 0.1 },
     bug: { r: 1.0, g: 0.2, b: 0.3 }
   },
-  // Scheme 4: Blue/Cyan
+  // Scheme 1: Orange (橙)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.1, g: 0.4, b: 0.1 },
+    flower: { r: 1.0, g: 0.5, b: 0.0 },
+    bug: { r: 1.0, g: 0.6, b: 0.2 }
+  },
+  // Scheme 2: Yellow (黃)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.1, g: 0.4, b: 0.1 },
+    flower: { r: 1.0, g: 0.9, b: 0.0 },
+    bug: { r: 1.0, g: 0.95, b: 0.3 }
+  },
+  // Scheme 3: Green (綠)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.05, g: 0.4, b: 0.15 },
+    flower: { r: 0.2, g: 0.9, b: 0.2 },
+    bug: { r: 0.3, g: 1.0, b: 0.4 }
+  },
+  // Scheme 4: Blue (藍)
   {
     head: { r: 0.0, g: 1.0, b: 0.5 },
     vine: { r: 0.05, g: 0.3, b: 0.25 },
-    flower: { r: 0.0, g: 0.6, b: 1.0 },
-    bug: { r: 0.2, g: 0.8, b: 1.0 }
+    flower: { r: 0.0, g: 0.5, b: 1.0 },
+    bug: { r: 0.2, g: 0.7, b: 1.0 }
   },
-  // Scheme 5: White/Light
+  // Scheme 5: Indigo (靛)
   {
     head: { r: 0.0, g: 1.0, b: 0.5 },
-    vine: { r: 0.1, g: 0.4, b: 0.15 },
-    flower: { r: 1.0, g: 0.95, b: 0.9 },
-    bug: { r: 0.9, g: 0.9, b: 1.0 }
+    vine: { r: 0.15, g: 0.3, b: 0.25 },
+    flower: { r: 0.3, g: 0.0, b: 0.8 },
+    bug: { r: 0.4, g: 0.2, b: 0.9 }
+  },
+  // Scheme 6: Purple (紫)
+  {
+    head: { r: 0.0, g: 1.0, b: 0.5 },
+    vine: { r: 0.15, g: 0.3, b: 0.2 },
+    flower: { r: 0.8, g: 0.2, b: 1.0 },
+    bug: { r: 0.9, g: 0.3, b: 1.0 }
   }
 ];
 
-const colorSchemeNames = ['Pink', 'Yellow', 'Purple', 'Red', 'Blue', 'White'];
+const colorSchemeNames = ['Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Indigo', 'Purple'];
 
 // Get random color scheme (no longer sequential)
 const getRandomColorScheme = (): ColorScheme => {
@@ -315,15 +85,24 @@ const App: React.FC = () => {
   const [detectedHeads, setDetectedHeads] = useState<FaceRegion[]>([]);
   const [isDetectorReady, setIsDetectorReady] = useState<boolean>(false);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
-  const [loadingProgress, setLoadingProgress] = useState<string>("Initializing...");
 
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
   const detectionStableCountRef = useRef<number>(0);
   const autoCaptureFiredRef = useRef<boolean>(false);
-  const detectionFrameCount = useRef<number>(0);
 
-  // Detection persistence: keep detections for 1.5 seconds even if temporarily lost
-  const detectionHistoryRef = useRef<Map<string, { region: FaceRegion; timestamp: number }>>(new Map());
+  // For detection box persistence (2 second minimum display)
+  const lastDetectionTimeRef = useRef<number>(0);
+  const lastDetectedRegionsRef = useRef<Array<{
+    canvasX: number;
+    canvasY: number;
+    canvasWidth: number;
+    canvasHeight: number;
+    headCenterX: number;
+    headCenterY: number;
+    headRadius: number;
+    confidence: number;
+    index: number;
+  }>>([]);
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
@@ -346,30 +125,24 @@ const App: React.FC = () => {
     const initDetector = async () => {
       try {
         console.log("Loading BlazeFace (optimized for multiple faces)...");
-        setLoadingProgress("Loading AI model...");
         setStatusText("LOADING DETECTOR...");
 
-        // Load BlazeFace with MAXIMUM SENSITIVITY for statue detection
+        // Load BlazeFace with optimized settings for detecting multiple faces
         const blazeModel = await blazeface.load({
-          maxFaces: 30,           // Support up to 30 faces
-          iouThreshold: 0.2,      // More lenient NMS - allow more overlapping detections
-          scoreThreshold: 0.25    // EXTREMELY LOW threshold to catch all statues (even distant/small)
+          maxFaces: 20,           // Increase max faces from default 10 to 20
+          iouThreshold: 0.3,      // Intersection over Union threshold for NMS
+          scoreThreshold: 0.6     // Lower threshold to detect more faces (default 0.75)
         });
 
         if (cancelled) return;
 
-        console.log("BlazeFace model loaded, preparing detector...");
-        setLoadingProgress("Initializing detector...");
-
         faceDetectorRef.current = blazeModel;
         setIsDetectorReady(true);
-        setStatusText("READY - Point camera at statues");
-        setLoadingProgress("");
-        console.log("BlazeFace loaded successfully - STATUE DETECTION MODE!");
+        setStatusText("READY - Point camera at faces");
+        console.log("BlazeFace loaded successfully - READY!");
       } catch (err) {
         console.error("Failed to initialize detector:", err);
         setStatusText("DETECTOR ERROR");
-        setLoadingProgress("Error loading detector");
         setGameState(GameState.ERROR);
       }
     };
@@ -431,18 +204,14 @@ const App: React.FC = () => {
     if (!isDetectorReady || !faceDetectorRef.current) return;
     if (!videoRef.current || !overlayCanvasRef.current) return;
 
-    console.log("Starting SMART adaptive detection (500ms interval)...");
-
-    // Create temporary canvas for image preprocessing (reusable)
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+    console.log("Starting FAST face detection (200ms interval)...");
 
     const detectFaces = async () => {
       const video = videoRef.current;
       const canvas = overlayCanvasRef.current;
       const faceDetector = faceDetectorRef.current;
 
-      if (!video || !canvas || !faceDetector || video.videoWidth === 0 || !tempCtx) {
+      if (!video || !canvas || !faceDetector || video.videoWidth === 0) {
         return;
       }
 
@@ -454,111 +223,60 @@ const App: React.FC = () => {
 
       const ctx = canvas.getContext('2d');
       if (!ctx) {
+        detectionIntervalRef.current = requestAnimationFrame(detectObjects);
         return;
       }
 
       try {
-        detectionFrameCount.current++;
+        // Run BlazeFace detection with optimized settings for multiple faces
+        // returnTensors: false, flipHorizontal: false
+        const faceDetections = await faceDetector.estimateFaces(video, false);
 
-        // ENHANCED MULTI-SCALE: Use more scales for better distant face detection
-        // Every other frame uses multi-scale (balance between performance and accuracy)
-        const useMultiScale = detectionFrameCount.current % 2 === 0;
-
-        // 4 scales: 1.0x (original), 0.7x (medium), 0.5x (small), 0.35x (very small/distant)
-        const scales = useMultiScale ? [1.0, 0.7, 0.5, 0.35] : [1.0, 0.6];
-        const allDetections: any[] = [];
-
-        for (const scale of scales) {
-          // Set temp canvas size based on scale
-          tempCanvas.width = video.videoWidth * scale;
-          tempCanvas.height = video.videoHeight * scale;
-
-          // Apply STRONG preprocessing on smaller scales for distant faces
-          if (scale <= 0.5) {
-            // Very small scale: strong enhancement
-            tempCtx.filter = 'contrast(1.5) brightness(1.25) saturate(0.9)';
-          } else if (scale < 1.0) {
-            // Medium scale: moderate enhancement
-            tempCtx.filter = 'contrast(1.35) brightness(1.18)';
-          } else {
-            // Original scale: no enhancement
-            tempCtx.filter = 'none';
-          }
-
-          tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-          tempCtx.filter = 'none';
-
-          // Run detection on this scale
-          const scaleDetections = await faceDetector.estimateFaces(tempCanvas, false);
-
-          // Scale coordinates back to original size
-          scaleDetections.forEach((face: any) => {
-            const scaledFace = {
-              ...face,
-              topLeft: [face.topLeft[0] / scale, face.topLeft[1] / scale],
-              bottomRight: [face.bottomRight[0] / scale, face.bottomRight[1] / scale],
-              landmarks: face.landmarks?.map((lm: number[]) => [lm[0] / scale, lm[1] / scale]),
-              probability: face.probability,
-              scale: scale
-            };
-            allDetections.push(scaledFace);
-          });
-        }
-
-        // Merge overlapping detections using custom NMS (more lenient for distant faces)
-        const mergedDetections = mergeOverlappingDetections(allDetections, 0.4);
-
-        // FILTER TO STATUES ONLY - remove humans completely
-        const statueDetections = mergedDetections.filter((f: any) => {
-          const [x, y] = f.topLeft;
-          const [x2, y2] = f.bottomRight;
-          const analysis = analyzeStatueCharacteristics(tempCtx!, x, y, x2 - x, y2 - y);
-          return analysis.isStatue;
-        });
-
-        const filteredCount = mergedDetections.length - statueDetections.length;
-
-        if (useMultiScale) {
-          console.log(`🔍 Multi-scale (4 scales): ${allDetections.length} raw → ${mergedDetections.length} merged → ${statueDetections.length} STATUES (filtered ${filteredCount} humans)`);
-        } else {
-          console.log(`🔍 Fast detect (2 scales): ${mergedDetections.length} merged → ${statueDetections.length} STATUES (filtered ${filteredCount} humans)`);
-        }
+        console.log(`🔍 BlazeFace detected ${faceDetections.length} faces in current frame`);
 
         // Clear previous drawings
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // Calculate video display dimensions (object-cover)
-        const videoAspect = video.videoWidth / video.videoHeight;
-        const canvasAspect = canvas.width / canvas.height;
+          // Calculate video display dimensions (object-cover)
+          const videoAspect = video.videoWidth / video.videoHeight;
+          const canvasAspect = canvas.width / canvas.height;
 
-        let drawWidth, drawHeight, offsetX, offsetY;
-        if (canvasAspect > videoAspect) {
-          drawWidth = canvas.width;
-          drawHeight = canvas.width / videoAspect;
-          offsetX = 0;
-          offsetY = (canvas.height - drawHeight) / 2;
-        } else {
-          drawHeight = canvas.height;
-          drawWidth = canvas.height * videoAspect;
-          offsetX = (canvas.width - drawWidth) / 2;
-          offsetY = 0;
-        }
+          let drawWidth, drawHeight, offsetX, offsetY;
+          if (canvasAspect > videoAspect) {
+            drawWidth = canvas.width;
+            drawHeight = canvas.width / videoAspect;
+            offsetX = 0;
+            offsetY = (canvas.height - drawHeight) / 2;
+          } else {
+            drawHeight = canvas.height;
+            drawWidth = canvas.height * videoAspect;
+            offsetX = (canvas.width - drawWidth) / 2;
+            offsetY = 0;
+          }
 
-        const headRegions: FaceRegion[] = [];
+          const headRegions: FaceRegion[] = [];
+          const currentTime = Date.now();
+          const detectedRegionsForDisplay: Array<{
+            canvasX: number;
+            canvasY: number;
+            canvasWidth: number;
+            canvasHeight: number;
+            headCenterX: number;
+            headCenterY: number;
+            headRadius: number;
+            confidence: number;
+            index: number;
+          }> = [];
 
-        // Process ONLY STATUE detections (humans filtered out)
-        statueDetections.forEach((face: any, index: number) => {
+          // Process ALL BlazeFace detections (supports multiple faces)
+          faceDetections.forEach((face: any, index: number) => {
             const [x, y] = face.topLeft;
             const [x2, y2] = face.bottomRight;
             const width = x2 - x;
             const height = y2 - y;
             const confidence = face.probability ? face.probability[0] : 0.9;
-            const detectionScale = face.scale || 1.0;
 
-            // Analyze statue characteristics (already filtered, but get details for logging)
-            const statueAnalysis = analyzeStatueCharacteristics(tempCtx!, x, y, width, height);
-
-            console.log(`  ✓ Statue ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] conf=${confidence.toFixed(2)} scale=${detectionScale.toFixed(2)}x sat=${statueAnalysis.saturation.toFixed(3)} skin=${statueAnalysis.hasSkin ? 'YES⚠️' : 'NO✓'}`);
+            console.log(`  Face ${index + 1}: bbox=[${x.toFixed(0)},${y.toFixed(0)},${width.toFixed(0)},${height.toFixed(0)}] confidence=${confidence.toFixed(2)}`);
 
             // Convert to canvas coordinates
             const canvasX = offsetX + (x / video.videoWidth) * drawWidth;
@@ -566,88 +284,23 @@ const App: React.FC = () => {
             const canvasWidth = (width / video.videoWidth) * drawWidth;
             const canvasHeight = (height / video.videoHeight) * drawHeight;
 
-            // PRECISE HEAD POSITIONING using landmarks (eyes, nose, mouth)
-            let headCenterX, headCenterY, headRadius;
+            // For face detection, the entire bbox IS the head
+            const headCenterX = canvasX + canvasWidth / 2;
+            const headCenterY = canvasY + canvasHeight / 2;
+            const headRadius = Math.max(canvasWidth, canvasHeight) * 0.6;
 
-            if (face.landmarks && face.landmarks.length >= 6) {
-              // BlazeFace landmarks: [rightEye, leftEye, nose, mouth, rightEar, leftEar]
-              const rightEye = face.landmarks[0];
-              const leftEye = face.landmarks[1];
-              const nose = face.landmarks[2];
-              const mouth = face.landmarks[3];
-
-              // Calculate eye center (good reference for head center)
-              const eyeCenterX = (rightEye[0] + leftEye[0]) / 2;
-              const eyeCenterY = (rightEye[1] + leftEye[1]) / 2;
-
-              // Eye distance (helps estimate head size)
-              const eyeDistance = Math.sqrt(
-                Math.pow(leftEye[0] - rightEye[0], 2) +
-                Math.pow(leftEye[1] - rightEye[1], 2)
-              );
-
-              // Head center is slightly above eye line
-              const headCenterVideoX = eyeCenterX;
-              const headCenterVideoY = eyeCenterY - eyeDistance * 0.2; // Slightly up from eyes
-
-              // Convert to canvas coordinates
-              headCenterX = offsetX + (headCenterVideoX / video.videoWidth) * drawWidth;
-              headCenterY = offsetY + (headCenterVideoY / video.videoHeight) * drawHeight;
-
-              // Head radius based on eye distance (typical face width is ~1.5x eye distance)
-              // Vertical extent: from above eyes to below chin
-              const faceHeight = Math.abs(mouth[1] - eyeCenterY) * 2.2; // From eyes to mouth, extended
-              const faceWidth = eyeDistance * 1.8; // Eye distance to face width ratio
-
-              headRadius = Math.max(faceHeight, faceWidth) / 2 * (drawWidth / video.videoWidth);
-            } else {
-              // Fallback: use bbox if no landmarks
-              headCenterX = canvasX + canvasWidth / 2;
-              headCenterY = canvasY + canvasHeight / 2;
-              headRadius = Math.max(canvasWidth, canvasHeight) * 0.6;
-            }
-
-            // Draw STATUE detection circle (orange, THIN DASHED)
-            ctx.beginPath();
-            ctx.arc(headCenterX, headCenterY, headRadius, 0, 2 * Math.PI);
-            ctx.setLineDash([8, 4]); // Dashed line pattern: 8px dash, 4px gap
-            ctx.strokeStyle = 'rgba(255, 165, 0, 0.9)'; // Bright orange for statues
-            ctx.lineWidth = 1.5; // Thin line
-            ctx.stroke();
-            ctx.setLineDash([]); // Reset to solid line
-
-            // Draw detection box (orange, THIN DASHED)
-            ctx.setLineDash([6, 3]); // Dashed line: 6px dash, 3px gap
-            ctx.strokeStyle = 'rgba(255, 165, 0, 0.7)';
-            ctx.lineWidth = 1; // Very thin
-            ctx.strokeRect(canvasX, canvasY, canvasWidth, canvasHeight);
-            ctx.setLineDash([]); // Reset
-
-            // Draw facial landmarks (if available)
-            if (face.landmarks && face.landmarks.length >= 6) {
-              const landmarks = face.landmarks;
-              ctx.fillStyle = 'rgba(255, 100, 255, 0.9)'; // Bright magenta for landmarks
-              landmarks.forEach((lm: number[]) => {
-                const lmX = offsetX + (lm[0] / video.videoWidth) * drawWidth;
-                const lmY = offsetY + (lm[1] / video.videoHeight) * drawHeight;
-                ctx.beginPath();
-                ctx.arc(lmX, lmY, 4, 0, 2 * Math.PI);
-                ctx.fill();
-              });
-            }
-
-            // Draw statue info (all orange theme)
-            ctx.fillStyle = 'rgba(255, 165, 0, 1.0)';
-            ctx.font = 'bold 18px monospace';
-            ctx.fillText(`#${index + 1}`, canvasX + 5, canvasY + 22);
-            ctx.font = '14px monospace';
-            ctx.fillText(`${(confidence * 100).toFixed(0)}%`, canvasX + 5, canvasY + 42);
-            ctx.font = '11px monospace';
-            ctx.fillStyle = 'rgba(255, 200, 0, 1.0)';
-            ctx.fillText(`${detectionScale.toFixed(2)}x`, canvasX + 5, canvasY + 58);
-            ctx.fillStyle = 'rgba(255, 140, 0, 1.0)';
-            ctx.font = 'bold 12px monospace';
-            ctx.fillText('STATUE', canvasX + 5, canvasY + 74);
+            // Store for potential persistence
+            detectedRegionsForDisplay.push({
+              canvasX,
+              canvasY,
+              canvasWidth,
+              canvasHeight,
+              headCenterX,
+              headCenterY,
+              headRadius,
+              confidence,
+              index
+            });
 
             // Calculate GROWTH region - smaller circle in lower-middle part of head
             const growthCenterX = headCenterX;
@@ -665,50 +318,65 @@ const App: React.FC = () => {
             });
           });
 
-          // DETECTION PERSISTENCE: Keep detections for 1.5 seconds
-          const now = Date.now();
-          const PERSISTENCE_TIME = 1500; // 1.5 seconds
+          // Update last detection time and regions if faces detected
+          if (detectedRegionsForDisplay.length > 0) {
+            lastDetectionTimeRef.current = currentTime;
+            lastDetectedRegionsRef.current = detectedRegionsForDisplay;
+          }
 
-          // Add new detections to history
-          headRegions.forEach((region, index) => {
-            const key = `statue_${index}_${Math.floor(region.centerX * 1000)}_${Math.floor(region.centerY * 1000)}`;
-            detectionHistoryRef.current.set(key, { region, timestamp: now });
+          // Determine which regions to display (with 2 second persistence)
+          let regionsToDisplay = detectedRegionsForDisplay;
+          const timeSinceLastDetection = currentTime - lastDetectionTimeRef.current;
+
+          // If no faces detected now, but last detection was within 2 seconds, show last detected regions
+          if (detectedRegionsForDisplay.length === 0 && timeSinceLastDetection < 2000) {
+            regionsToDisplay = lastDetectedRegionsRef.current;
+            console.log(`⏱️ No faces detected, but showing last detection (${(timeSinceLastDetection/1000).toFixed(1)}s ago)`);
+          }
+
+          // Draw all regions to display
+          regionsToDisplay.forEach((region) => {
+            // Draw circle with 2pt semi-transparent line
+            ctx.beginPath();
+            ctx.arc(region.headCenterX, region.headCenterY, region.headRadius, 0, 2 * Math.PI);
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.6)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Draw detection box
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(region.canvasX, region.canvasY, region.canvasWidth, region.canvasHeight);
+
+            // Draw face number and confidence
+            ctx.fillStyle = 'rgba(0, 255, 0, 0.9)';
+            ctx.font = 'bold 16px monospace';
+            ctx.fillText(`#${region.index + 1}`, region.canvasX + 5, region.canvasY + 20);
+            ctx.font = '12px monospace';
+            ctx.fillText(`${(region.confidence * 100).toFixed(0)}%`, region.canvasX + 5, region.canvasY + 38);
           });
 
-          // Remove expired detections (older than 1.5 seconds)
-          const keysToDelete: string[] = [];
-          detectionHistoryRef.current.forEach((value, key) => {
-            if (now - value.timestamp > PERSISTENCE_TIME) {
-              keysToDelete.push(key);
-            }
-          });
-          keysToDelete.forEach(key => detectionHistoryRef.current.delete(key));
+          setDetectedHeads(headRegions);
 
-          // Get all persisted detections (including recently expired but still within window)
-          const persistedRegions = Array.from(detectionHistoryRef.current.values()).map(v => v.region);
-
-          setDetectedHeads(persistedRegions);
-
-          // AUTO-CAPTURE LOGIC: If STATUES detected for 2 consecutive frames, auto-capture
+          // AUTO-CAPTURE LOGIC: If faces detected for 2 consecutive frames, auto-capture
           if (headRegions.length > 0) {
             detectionStableCountRef.current++;
 
-            // After 2 stable detections (about 1 second), auto-trigger capture
+            // After 2 stable detections (about 400ms), auto-trigger capture - FAST!
             if (detectionStableCountRef.current >= 2 && !autoCaptureFiredRef.current) {
-              console.log(`AUTO-CAPTURE: ${headRegions.length} STATUES detected for 2 frames - triggering capture!`);
+              console.log("AUTO-CAPTURE: Faces detected for 2 frames - triggering FAST capture!");
               autoCaptureFiredRef.current = true;
 
               // Trigger capture immediately
               setTimeout(() => {
                 handleInteraction();
-              }, 100);
+              }, 50);
             }
 
-            const statueLabel = headRegions.length === 1 ? 'STATUE' : 'STATUES';
-            setStatusText(`${headRegions.length} ${statueLabel} DETECTED - CAPTURING...`);
+            setStatusText(`${headRegions.length} DETECTED - CAPTURING...`);
           } else {
             detectionStableCountRef.current = 0;
-            setStatusText("Point camera at statues");
+            setStatusText("Point camera at faces");
           }
 
       } catch (err) {
@@ -716,9 +384,9 @@ const App: React.FC = () => {
       }
     };
 
-    // Run detection every 500ms (balanced for performance and responsiveness)
+    // Run detection every 200ms (faster response, still efficient)
     detectFaces();
-    const intervalId = setInterval(detectFaces, 500);
+    const intervalId = setInterval(detectFaces, 200);
     detectionIntervalRef.current = intervalId as any;
 
     return () => {
@@ -734,7 +402,9 @@ const App: React.FC = () => {
     setViciClickCount(newClickCount);
 
     // Change color every 5 clicks with RANDOM selection
-    if ((newClickCount - 1) % 5 === 0) {
+    // First 5 clicks (1-5): Color A, Next 5 clicks (6-10): Color B, etc.
+    // So change color at clicks 6, 11, 16, 21...
+    if ((newClickCount - 1) % 5 === 0 && newClickCount > 1) {
       const newColorScheme = getRandomColorScheme();
       const newColorIndex = colorSchemes.findIndex(
         scheme => scheme.flower.r === newColorScheme.flower.r &&
@@ -744,17 +414,17 @@ const App: React.FC = () => {
       setCurrentColorScheme(newColorScheme);
       setCurrentColorIndex(newColorIndex);
       const schemeName = colorSchemeNames[newColorIndex];
-      console.log(`🎨 COLOR CHANGED to ${schemeName} (RANDOM) at click ${newClickCount}:`, newColorScheme);
+      console.log(`🎨 COLOR CHANGED to ${schemeName} (RANDOM) at click ${newClickCount} (every 5 clicks):`, newColorScheme);
     }
 
-    // IF IDLE: Capture and detect statue heads
+    // IF IDLE: Capture and detect heads
     if (gameState === GameState.IDLE) {
         if (!videoRef.current || !canvasRef.current) return;
 
-        // Check if at least one STATUE is detected
+        // Check if at least one face is detected
         if (detectedHeads.length === 0) {
-          setStatusText("NO STATUES DETECTED");
-          setTimeout(() => setStatusText("Point camera at statues"), 2000);
+          setStatusText("NO FACES DETECTED");
+          setTimeout(() => setStatusText("Point camera at faces"), 2000);
           return;
         }
 
@@ -806,7 +476,7 @@ const App: React.FC = () => {
     setAnalysisResult(null);
     setGrowthTrigger(0);
     setDetectedHeads([]);
-    setStatusText("Point camera at statues");
+    setStatusText("Point camera at faces");
     detectionStableCountRef.current = 0;
     autoCaptureFiredRef.current = false;
   };
@@ -823,7 +493,6 @@ const App: React.FC = () => {
         autoPlay
         playsInline
         muted
-        controls={false}
         webkit-playsinline="true"
         x5-playsinline="true"
         x-webkit-airplay="allow"
@@ -838,11 +507,7 @@ const App: React.FC = () => {
         }}
         onLoadedMetadata={(e) => {
           const video = e.currentTarget;
-          // ULTRA-FAST DOUBLE PLAY FIX - prevents play button from showing
-          video.play().catch(err => console.log("Play error 1:", err));
-          setTimeout(() => {
-            video.play().catch(err => console.log("Play error 2:", err));
-          }, 1); // 1ms = ultra-fast second click
+          video.play().catch(err => console.log("Play error:", err));
         }}
         onCanPlay={(e) => {
           const video = e.currentTarget;
@@ -893,7 +558,7 @@ const App: React.FC = () => {
         gameState={gameState}
         onInteraction={handleInteraction}
         onReset={handleReset}
-        analysisText={loadingProgress || statusText}
+        analysisText={statusText}
         analysisResult={analysisResult}
       />
 
