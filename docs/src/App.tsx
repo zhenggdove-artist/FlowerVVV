@@ -126,6 +126,7 @@ const analyzeHairOnTop = (
   let hairPixels = 0;
   let totalPixels = 0;
   let hairSatSum = 0;
+  let hairLumaSum = 0;
   let hairSatCount = 0;
 
   // Focus on the upper band (where hair should exist) to avoid skin/forehead diluting coverage.
@@ -161,7 +162,7 @@ const analyzeHairOnTop = (
 
     // Spec: HUMAN if the TOP is largely covered by highly-saturated black/dark-brown hair.
     // We treat "black hair" as very dark with some chroma (avoid gray shadows).
-    const isDeepBrown = h >= 10 && h <= 65 && s >= 0.18 && luma <= 0.58 && v <= 0.8;
+    const isDeepBrown = h >= 10 && h <= 65 && s >= 0.18 && luma <= 0.6 && v <= 0.85;
     const isSaturatedDark = luma <= 0.42 && s >= 0.24;
     const isSaturatedBlack = v <= 0.23 && luma <= 0.28 && s >= 0.08;
 
@@ -169,6 +170,7 @@ const analyzeHairOnTop = (
     if (isHairPixel) {
       hairPixels++;
       hairSatSum += s;
+      hairLumaSum += luma;
       hairSatCount++;
     }
     totalPixels++;
@@ -188,11 +190,16 @@ const analyzeHairOnTop = (
   const hairCoverage = totalPixels > 0 ? hairPixels / totalPixels : 0;
   const edgeRatio = edgeCount / Math.max(1, (bandH - 1) * (SAMPLE - 1));
   const avgHairSat = hairSatCount > 0 ? hairSatSum / hairSatCount : 0;
+  const avgHairLuma = hairSatCount > 0 ? hairLumaSum / hairSatCount : 0;
 
   const HAIR_COVERAGE_MIN = 0.28;
   const EDGE_RATIO_MIN = 0.03;
   const SAT_MIN = 0.14;
-  const isHuman = hairCoverage >= HAIR_COVERAGE_MIN && avgHairSat >= SAT_MIN && edgeRatio >= EDGE_RATIO_MIN;
+  const isHuman =
+    hairCoverage >= HAIR_COVERAGE_MIN &&
+    avgHairSat >= SAT_MIN &&
+    edgeRatio >= EDGE_RATIO_MIN &&
+    avgHairLuma < 0.7;
 
   return {
     isHuman,
