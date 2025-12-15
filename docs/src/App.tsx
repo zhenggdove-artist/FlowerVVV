@@ -539,10 +539,9 @@ const App: React.FC = () => {
           })
         );
 
-        await runWithProgress('PERSON', 70, 100, async () => {
-          await ensureCocoLoaded();
-          return true;
-        });
+        // COCO-SSD is only a fallback/gating helper and can be slow/hang on some mobile devices.
+        // Never block app readiness on it.
+        await runWithProgress('PERSON', 70, 100, async () => true);
 
         if (cancelled) return;
 
@@ -553,6 +552,19 @@ const App: React.FC = () => {
 
         setIsDetectorReady(true);
         setStatusText("READY - Point camera at TARGET");
+
+        // Load COCO-SSD opportunistically in the background (optional).
+        // Use requestIdleCallback when available to avoid stalling the loading screen.
+        const loadCocoInBackground = () => {
+          if (cancelled) return;
+          void ensureCocoLoaded();
+        };
+        const w = window as any;
+        if (typeof w.requestIdleCallback === 'function') {
+          w.requestIdleCallback(loadCocoInBackground, { timeout: 3000 });
+        } else {
+          window.setTimeout(loadCocoInBackground, 1500);
+        }
         console.log(`✅ ${DETECTION_ENGINE} is ready for STATUE detection!`);
       } catch (err) {
         console.error(`❌ Failed to initialize ${DETECTION_ENGINE}:`, err);
