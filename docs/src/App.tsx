@@ -13,9 +13,11 @@ import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
 type DetectionEngine = 'BLAZEFACE' | 'MEDIAPIPE' | 'HYBRID';
 const DETECTION_ENGINE: DetectionEngine = 'HYBRID';
 
-const INTERACTION_CONFIDENCE_MIN = 0.4; // 40%
-const DISPLAY_CONFIDENCE_MIN = 0.15;
-const BOX_PERSIST_MS = 700;
+// NOTE: These thresholds intentionally bias toward precision (fewer false boxes).
+// If you want more recall, lower them slightly (at the cost of more false positives).
+const INTERACTION_CONFIDENCE_MIN = 0.5; // actionable targets
+const DISPLAY_CONFIDENCE_MIN = 0.3; // draw boxes only above this
+const BOX_PERSIST_MS = 900;
 // ============================================
 
 // Color schemes pool for random selection (紅橙黃綠藍靛紫)
@@ -374,8 +376,8 @@ const App: React.FC = () => {
 
   const [growthTrigger, setGrowthTrigger] = useState<number>(0);
 
-  // For detection box persistence (0.7s minimum display per box)
-  const detectedRegionsHistoryRef = useRef<Array<{
+  type TrackedRegion = {
+    id: number;
     region: {
       canvasX: number;
       canvasY: number;
@@ -387,8 +389,12 @@ const App: React.FC = () => {
       confidence: number;
       index: number;
     };
-    timestamp: number;
-  }>>([]);
+    lastSeen: number;
+    hits: number;
+  };
+
+  const trackedRegionsRef = useRef<TrackedRegion[]>([]);
+  const nextTrackIdRef = useRef<number>(1);
 
   // Color scheme management
   const [viciClickCount, setViciClickCount] = useState<number>(0);
@@ -462,9 +468,9 @@ const App: React.FC = () => {
     const initBlazeFace = async () => {
       console.log("🔵 Initializing BlazeFace with AGGRESSIVE settings...");
         const blazeModel = await blazeface.load({
-          maxFaces: 100,
-          iouThreshold: 0.1,
-          scoreThreshold: 0.15
+          maxFaces: 10,
+          iouThreshold: 0.3,
+          scoreThreshold: DISPLAY_CONFIDENCE_MIN
         });
 
       if (cancelled) return;
@@ -485,19 +491,19 @@ const App: React.FC = () => {
       if (cancelled) return false;
 
       console.log("🔧 Creating FaceDetector with OPTIMIZED config...");
-      console.log("   - Model: blaze_face_short_range");
-      console.log("   - minDetectionConfidence: 0.2 (high recall)");
-      console.log("   - minSuppressionThreshold: 0.3 (less strict NMS)");
+      console.log("   - Model: face_detection_full_range");
+      console.log(`   - minDetectionConfidence: ${DISPLAY_CONFIDENCE_MIN} (precision-biased)`);
+      console.log("   - minSuppressionThreshold: 0.3");
 
       const createDetector = async (delegate: 'GPU' | 'CPU') =>
         FaceDetector.createFromOptions(vision, {
           baseOptions: {
             modelAssetPath:
-              "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+              "https://storage.googleapis.com/mediapipe-assets/face_detection_full_range.tflite",
             delegate
           },
           runningMode: "VIDEO",
-          minDetectionConfidence: 0.2,
+          minDetectionConfidence: DISPLAY_CONFIDENCE_MIN,
           minSuppressionThreshold: 0.3
         });
 
@@ -774,55 +780,77 @@ const App: React.FC = () => {
         */
 
         // ============================================
-        // COCO-SSD PERSON DETECTION (HEAD FALLBACK)
+        // COCO-SSD PERSON DETECTION (HEAD ROI + GATING)
         const now = Date.now();
-        const PERSON_REFRESH_MS = 400;
-        const PERSON_MIN_SCORE = 0.25;
+        const PERSON_REFRESH_MS = 650;
+        const PERSON_MIN_SCORE = 0.35;
+        const PERSON_MAX_BOXES = 3;
+        const PERSON_GATE_MIN_SCORE = 0.4;
 
-        const shouldUsePersonFallback = faceDetections.length === 0;
+        const coco = cocoDetectorRef.current;
+        if (coco && now - lastPersonDetectAtRef.current > PERSON_REFRESH_MS) {
+          try {
+            const detections = await coco.detect(video, PERSON_MAX_BOXES, PERSON_MIN_SCORE);
+            const personHeads = (detections || [])
+              .filter((d: cocoSsd.DetectedObject) => d.class === 'person' && d.score >= PERSON_MIN_SCORE)
+              .map((d: cocoSsd.DetectedObject) => {
+                const [px, py, pw, ph] = d.bbox;
+                const aspect = ph / Math.max(1, pw);
 
-        if (shouldUsePersonFallback) {
-          const coco = cocoDetectorRef.current;
-          if (coco && now - lastPersonDetectAtRef.current > PERSON_REFRESH_MS) {
-            try {
-              const detections = await coco.detect(video, 5, PERSON_MIN_SCORE);
-              const personHeads = (detections || [])
-                .filter((d: cocoSsd.DetectedObject) => d.class === 'person' && d.score >= PERSON_MIN_SCORE)
-                .map((d: cocoSsd.DetectedObject) => {
-                  const [px, py, pw, ph] = d.bbox;
-                  const aspect = ph / Math.max(1, pw);
+                // Derive a head-only ROI from the person box (do NOT display body boxes)
+                const headHeightRatio = aspect < 1.2 ? 0.45 : 0.3;
+                const headWidthRatio = aspect < 1.2 ? 0.65 : 0.45;
 
-                  // Derive a head-only region from the person box (do NOT display body boxes)
-                  const headHeightRatio = aspect < 1.2 ? 0.45 : 0.3;
-                  const headWidthRatio = aspect < 1.2 ? 0.65 : 0.45;
+                const headW = pw * headWidthRatio;
+                const headH = ph * headHeightRatio;
+                const headX = px + (pw - headW) / 2;
+                const headY = py;
 
-                  const headW = pw * headWidthRatio;
-                  const headH = ph * headHeightRatio;
-                  const headX = px + (pw - headW) / 2;
-                  const headY = py;
+                const clampedX = Math.max(0, Math.min(video.videoWidth - 1, headX));
+                const clampedY = Math.max(0, Math.min(video.videoHeight - 1, headY));
+                const clampedW = Math.max(1, Math.min(video.videoWidth - clampedX, headW));
+                const clampedH = Math.max(1, Math.min(video.videoHeight - clampedY, headH));
 
-                  const clampedX = Math.max(0, Math.min(video.videoWidth - 1, headX));
-                  const clampedY = Math.max(0, Math.min(video.videoHeight - 1, headY));
-                  const clampedW = Math.max(1, Math.min(video.videoWidth - clampedX, headW));
-                  const clampedH = Math.max(1, Math.min(video.videoHeight - clampedY, headH));
+                return {
+                  topLeft: [clampedX, clampedY],
+                  bottomRight: [clampedX + clampedW, clampedY + clampedH],
+                  probability: [d.score],
+                  _source: 'COCO_PERSON'
+                };
+              });
 
-                  return {
-                    topLeft: [clampedX, clampedY],
-                    bottomRight: [clampedX + clampedW, clampedY + clampedH],
-                    probability: [d.score],
-                    _source: 'COCO_PERSON'
-                  };
-                });
-
-              cachedPersonHeadDetectionsRef.current = personHeads;
-              lastPersonDetectAtRef.current = now;
-            } catch (err) {
-              console.warn("COCO-SSD detect() failed:", err);
-            }
+            cachedPersonHeadDetectionsRef.current = personHeads;
+            lastPersonDetectAtRef.current = now;
+          } catch (err) {
+            console.warn("COCO-SSD detect() failed:", err);
           }
+        }
 
-          if (cachedPersonHeadDetectionsRef.current.length > 0) {
-            faceDetections.push(...cachedPersonHeadDetectionsRef.current);
+        const personHeads = cachedPersonHeadDetectionsRef.current;
+        const personGateEnabled = personHeads.some(
+          (d: any) => (d.probability?.[0] ?? 0) >= PERSON_GATE_MIN_SCORE
+        );
+
+        if (personGateEnabled && personHeads.length > 0) {
+          const gated = faceDetections.filter((face: any) => {
+            const [x, y] = face.topLeft;
+            const [x2, y2] = face.bottomRight;
+            const cx = (x + x2) / 2;
+            const cy = (y + y2) / 2;
+            return personHeads.some((p: any) => {
+              const [px, py] = p.topLeft;
+              const [px2, py2] = p.bottomRight;
+              return cx >= px && cx <= px2 && cy >= py && cy <= py2;
+            });
+          });
+
+          // If face detections don't land inside the person-head ROI, prefer the ROI itself.
+          faceDetections = gated.length > 0 ? gated : [...personHeads];
+        } else {
+          const shouldUsePersonFallback =
+            !faceDetections.some((d: any) => (d.probability?.[0] ?? 0) >= DISPLAY_CONFIDENCE_MIN);
+          if (shouldUsePersonFallback && personHeads.length > 0) {
+            faceDetections.push(...personHeads);
           }
         }
 
@@ -850,9 +878,36 @@ const App: React.FC = () => {
             offsetY = 0;
           }
 
-          const headRegions: FaceRegion[] = [];
-          const currentTime = Date.now();
-          const detectedRegionsForDisplay: Array<{
+          const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+          const iou = (
+            a: { canvasX: number; canvasY: number; canvasWidth: number; canvasHeight: number },
+            b: { canvasX: number; canvasY: number; canvasWidth: number; canvasHeight: number }
+          ) => {
+            const ax2 = a.canvasX + a.canvasWidth;
+            const ay2 = a.canvasY + a.canvasHeight;
+            const bx2 = b.canvasX + b.canvasWidth;
+            const by2 = b.canvasY + b.canvasHeight;
+
+            const x1 = Math.max(a.canvasX, b.canvasX);
+            const y1 = Math.max(a.canvasY, b.canvasY);
+            const x2 = Math.min(ax2, bx2);
+            const y2 = Math.min(ay2, by2);
+
+            const w = Math.max(0, x2 - x1);
+            const h = Math.max(0, y2 - y1);
+            const inter = w * h;
+            const union = a.canvasWidth * a.canvasHeight + b.canvasWidth * b.canvasHeight - inter;
+            return union <= 0 ? 0 : inter / union;
+          };
+
+          const MAX_CANDIDATES_PER_FRAME = 6;
+          const MIN_HITS_FOR_STABLE = 2;
+          const INSTANT_STABLE_CONFIDENCE = 0.8;
+          const TRACK_MATCH_IOU_MIN = 0.25;
+          const TRACK_UPDATE_ALPHA = 0.35;
+          const MAX_DISPLAY_REGIONS = 3;
+
+          const currentRegions: Array<{
             canvasX: number;
             canvasY: number;
             canvasWidth: number;
@@ -864,8 +919,13 @@ const App: React.FC = () => {
             index: number;
           }> = [];
 
-          // Process ALL BlazeFace detections (supports multiple faces)
-          faceDetections.forEach((face: any, index: number) => {
+          const candidates = faceDetections
+            .slice()
+            .sort((a: any, b: any) => (b.probability?.[0] ?? 0) - (a.probability?.[0] ?? 0))
+            .slice(0, MAX_CANDIDATES_PER_FRAME);
+
+          // Process detections (supports multiple targets)
+          candidates.forEach((face: any, index: number) => {
             const [x, y] = face.topLeft;
             const [x2, y2] = face.bottomRight;
               const width = x2 - x;
@@ -908,7 +968,7 @@ const App: React.FC = () => {
 
             // Filter 5: Position sanity check - reject detections at extreme edges
             // Faces at very edge of frame are often false positives
-              const edgeMargin = 0; // allow edges (better recall)
+              const edgeMargin = 0.05; // reject extreme edges (precision)
             const minX = video.videoWidth * edgeMargin;
             const maxX = video.videoWidth * (1 - edgeMargin);
             const minY = video.videoHeight * edgeMargin;
@@ -948,9 +1008,9 @@ const App: React.FC = () => {
               const clearRadius = Math.max(24, Math.max(humanCanvasW, humanCanvasH) * 0.6);
               const clearRadius2 = clearRadius * clearRadius;
 
-              detectedRegionsHistoryRef.current = detectedRegionsHistoryRef.current.filter((item) => {
-                const dx = item.region.headCenterX - humanCenterX;
-                const dy = item.region.headCenterY - humanCenterY;
+              trackedRegionsRef.current = trackedRegionsRef.current.filter((track) => {
+                const dx = track.region.headCenterX - humanCenterX;
+                const dy = track.region.headCenterY - humanCenterY;
                 return dx * dx + dy * dy > clearRadius2;
               });
               return;
@@ -980,8 +1040,7 @@ const App: React.FC = () => {
             const headCenterY = canvasY + canvasHeight / 2;
             const headRadius = Math.max(canvasWidth, canvasHeight) * 0.6;
 
-            // Store for potential persistence
-            detectedRegionsForDisplay.push({
+            currentRegions.push({
               canvasX,
               canvasY,
               canvasWidth,
@@ -992,50 +1051,67 @@ const App: React.FC = () => {
               confidence,
               index
             });
-
-            // Calculate GROWTH region - smaller circle in lower-middle part of head
-            const growthCenterX = headCenterX;
-            const growthCenterY = headCenterY + headRadius * 0.3; // Move down 30% of radius
-            const growthRadius = headRadius * 0.5; // 50% of head radius
-
-            headRegions.push({
-              centerX: headCenterX / canvas.width,
-              centerY: headCenterY / canvas.height,
-              radius: headRadius / Math.max(canvas.width, canvas.height),
-              confidence: face.probability ? face.probability[0] : 0.9,
-              growthCenterX: growthCenterX / canvas.width,
-              growthCenterY: growthCenterY / canvas.height,
-              growthRadius: growthRadius / Math.max(canvas.width, canvas.height)
-            });
           });
 
-          // Add newly detected regions to history with current timestamp
-          detectedRegionsForDisplay.forEach(region => {
-            detectedRegionsHistoryRef.current.push({
-              region: region,
-              timestamp: currentTime
-            });
-          });
+          // Temporal tracking: require stability across frames to reduce false positives.
+          const tracks = trackedRegionsRef.current;
+          const usedTrackIds = new Set<number>();
 
-          // Remove regions older than BOX_PERSIST_MS from history
-          detectedRegionsHistoryRef.current = detectedRegionsHistoryRef.current.filter(
-            item => currentTime - item.timestamp < BOX_PERSIST_MS
-          );
+          currentRegions.forEach((region) => {
+            let bestTrack: TrackedRegion | null = null;
+            let bestIou = 0;
 
-            // Get unique regions to display (merge current detections with recent history)
-            // Prefer the highest-confidence region per position key (prevents stale low-confidence boxes).
-            const regionsByKey = new Map<string, (typeof detectedRegionsForDisplay)[number]>();
-            detectedRegionsHistoryRef.current.forEach(item => {
-              const key = `${Math.round(item.region.headCenterX)}_${Math.round(item.region.headCenterY)}`;
-              const existing = regionsByKey.get(key);
-              if (!existing || item.region.confidence > existing.confidence) {
-                regionsByKey.set(key, item.region);
+            for (const track of tracks) {
+              if (usedTrackIds.has(track.id)) continue;
+              const value = iou(track.region, region);
+              if (value > bestIou) {
+                bestIou = value;
+                bestTrack = track;
               }
-            });
+            }
 
-            const regionsToDisplay = Array.from(regionsByKey.values());
-            const displayRegions = regionsToDisplay.filter(r => r.confidence >= DISPLAY_CONFIDENCE_MIN);
-            const actionableRegions = displayRegions.filter(r => r.confidence >= INTERACTION_CONFIDENCE_MIN);
+            if (bestTrack && bestIou >= TRACK_MATCH_IOU_MIN) {
+              bestTrack.region.canvasX = lerp(bestTrack.region.canvasX, region.canvasX, TRACK_UPDATE_ALPHA);
+              bestTrack.region.canvasY = lerp(bestTrack.region.canvasY, region.canvasY, TRACK_UPDATE_ALPHA);
+              bestTrack.region.canvasWidth = lerp(bestTrack.region.canvasWidth, region.canvasWidth, TRACK_UPDATE_ALPHA);
+              bestTrack.region.canvasHeight = lerp(bestTrack.region.canvasHeight, region.canvasHeight, TRACK_UPDATE_ALPHA);
+              bestTrack.region.headCenterX = lerp(bestTrack.region.headCenterX, region.headCenterX, TRACK_UPDATE_ALPHA);
+              bestTrack.region.headCenterY = lerp(bestTrack.region.headCenterY, region.headCenterY, TRACK_UPDATE_ALPHA);
+              bestTrack.region.headRadius = lerp(bestTrack.region.headRadius, region.headRadius, TRACK_UPDATE_ALPHA);
+              bestTrack.region.confidence = Math.max(
+                bestTrack.region.confidence * (1 - TRACK_UPDATE_ALPHA) + region.confidence * TRACK_UPDATE_ALPHA,
+                region.confidence
+              );
+              bestTrack.lastSeen = now;
+              bestTrack.hits += 1;
+              usedTrackIds.add(bestTrack.id);
+            } else {
+              const id = nextTrackIdRef.current++;
+              tracks.push({
+                id,
+                region: { ...region, index: id - 1 },
+                lastSeen: now,
+                hits: 1
+              });
+              usedTrackIds.add(id);
+            }
+          });
+
+          trackedRegionsRef.current = tracks.filter((track) => now - track.lastSeen < BOX_PERSIST_MS);
+
+          const stableTracks = trackedRegionsRef.current
+            .filter(
+              (track) =>
+                track.hits >= MIN_HITS_FOR_STABLE || track.region.confidence >= INSTANT_STABLE_CONFIDENCE
+            )
+            .sort((a, b) => b.region.confidence - a.region.confidence)
+            .slice(0, MAX_DISPLAY_REGIONS);
+
+          const displayRegions = stableTracks
+            .map((track) => track.region)
+            .filter((region) => region.confidence >= DISPLAY_CONFIDENCE_MIN);
+
+          const actionableRegions = displayRegions.filter((r) => r.confidence >= INTERACTION_CONFIDENCE_MIN);
 
             // Draw all regions to display (orange dashed; dim if below interaction threshold)
             displayRegions.forEach((region) => {
@@ -1199,6 +1275,8 @@ const App: React.FC = () => {
     setGrowthTrigger(0);
     setDetectedHeads([]);
     detectedHeadsRef.current = [];
+    trackedRegionsRef.current = [];
+    nextTrackIdRef.current = 1;
     setStatusText("Point camera at TARGET");
   };
 
