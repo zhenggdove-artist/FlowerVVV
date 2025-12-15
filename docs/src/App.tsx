@@ -82,10 +82,21 @@ const getRandomColorScheme = (): ColorScheme => {
 };
 
 // ============================================
-// HUMAN DETECTION (Top-of-head hair check)
+// HUMAN DETECTION (Hair blocks on head: top + sides)
 // ============================================
 
-type HairCheckResult = { isHuman: boolean; reason: string; hairCoverage: number; edgeRatio: number };
+type HairCheckResult = {
+  isHuman: boolean;
+  reason: string;
+  topCoverage: number;
+  leftCoverage: number;
+  rightCoverage: number;
+  topContinuity: number;
+  leftContinuity: number;
+  rightContinuity: number;
+  avgHairSat: number;
+  avgHairLuma: number;
+};
 
 const HAIR_SAMPLE = 56;
 let hairSampleCanvas: HTMLCanvasElement | null = null;
@@ -101,7 +112,8 @@ const getHairSampleCtx = (): CanvasRenderingContext2D | null => {
 };
 
 /**
- * If the TOP of the head is largely covered by dark (black/brown) hair, treat as HUMAN.
+ * If the TOP + SIDES of the head are covered by a large, continuous, high-saturation
+ * dark (black/brown) hair block, treat as HUMAN.
  * Otherwise we treat detected face/head as STATUE.
  */
 const analyzeHairOnTop = (
@@ -110,30 +122,52 @@ const analyzeHairOnTop = (
 ): HairCheckResult => {
   const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
-  // Analyze a central band slightly ABOVE the bbox to catch hair even when the detector returns only the face.
-  const roiX = clamp(Math.floor(bbox.x + bbox.width * 0.15), 0, video.videoWidth - 1);
-  const roiW = clamp(Math.floor(bbox.width * 0.7), 1, video.videoWidth - roiX);
-  const roiY = clamp(Math.floor(bbox.y - bbox.height * 0.35), 0, video.videoHeight - 1);
-  const roiH = clamp(Math.floor(bbox.height * 0.6), 1, video.videoHeight - roiY);
+  // Enlarge around the face/head bbox to include hair above + left/right sides.
+  const roiX = clamp(Math.floor(bbox.x - bbox.width * 0.22), 0, video.videoWidth - 1);
+  const roiW = clamp(Math.floor(bbox.width * 1.44), 1, video.videoWidth - roiX);
+  const roiY = clamp(Math.floor(bbox.y - bbox.height * 0.7), 0, video.videoHeight - 1);
+  const roiH = clamp(Math.floor(bbox.height * 1.35), 1, video.videoHeight - roiY);
 
   const SAMPLE = HAIR_SAMPLE;
   const ctx = getHairSampleCtx();
-  if (!ctx) return { isHuman: false, reason: 'Canvas error', hairCoverage: 0, edgeRatio: 0 };
+  if (!ctx) {
+    return {
+      isHuman: false,
+      reason: 'Canvas error',
+      topCoverage: 0,
+      leftCoverage: 0,
+      rightCoverage: 0,
+      topContinuity: 0,
+      leftContinuity: 0,
+      rightContinuity: 0,
+      avgHairSat: 0,
+      avgHairLuma: 0
+    };
+  }
 
   ctx.drawImage(video, roiX, roiY, roiW, roiH, 0, 0, SAMPLE, SAMPLE);
   const imageData = ctx.getImageData(0, 0, SAMPLE, SAMPLE);
   const pixels = imageData.data;
 
-  const lumas = new Float32Array(SAMPLE * SAMPLE);
-  let hairPixels = 0;
-  let totalPixels = 0;
+  const hairMask = new Uint8Array(SAMPLE * SAMPLE);
+
+  // Region layout in the sampled head ROI:
+  // - TOP band: hair "cap"
+  // - LEFT/RIGHT bands: hair on the sides of the head
+  const topH = Math.max(2, Math.floor(SAMPLE * 0.42));
+  const sideW = Math.max(2, Math.floor(SAMPLE * 0.22));
+  const sideH = Math.max(2, Math.floor(SAMPLE * 0.85));
+
+  let topHair = 0;
+  let topTotal = 0;
+  let leftHair = 0;
+  let leftTotal = 0;
+  let rightHair = 0;
+  let rightTotal = 0;
+
   let hairSatSum = 0;
   let hairLumaSum = 0;
-  let hairSatCount = 0;
-
-  // Focus on the upper band (where hair should exist) to avoid skin/forehead diluting coverage.
-  const BAND_RATIO = 0.65;
-  const bandH = Math.max(2, Math.floor(SAMPLE * BAND_RATIO));
+  let hairCount = 0;
 
   for (let i = 0, p = 0; i < pixels.length; i += 4, p++) {
     const r = pixels[i];
@@ -145,9 +179,7 @@ const analyzeHairOnTop = (
     const delta = max - min;
     const v = max / 255;
     const s = max === 0 ? 0 : delta / max;
-
     const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-    lumas[p] = luma;
 
     // Hue (0..360)
     let h = 0;
@@ -159,57 +191,129 @@ const analyzeHairOnTop = (
       if (h < 0) h += 360;
     }
 
-    const y = Math.floor(p / SAMPLE);
-    if (y >= bandH) continue;
-
-    // Spec: HUMAN if the TOP is largely covered by highly-saturated black/dark-brown hair.
+    // Spec: HUMAN if TOP + SIDES have a large continuous high-saturation dark hair block.
     // We treat "black hair" as very dark with some chroma (avoid gray shadows).
-    const isDeepBrown = h >= 10 && h <= 65 && s >= 0.18 && luma <= 0.6 && v <= 0.85;
-    const isSaturatedDark = luma <= 0.42 && s >= 0.24;
-    const isSaturatedBlack = v <= 0.23 && luma <= 0.28 && s >= 0.08;
+    const isDeepBrown = h >= 10 && h <= 65 && s >= 0.22 && luma <= 0.62 && v <= 0.9;
+    const isSaturatedBlack = v <= 0.28 && luma <= 0.32 && s >= 0.12;
+    const isSaturatedDark = luma <= 0.4 && s >= 0.24;
 
-    const isHairPixel = isSaturatedBlack || isDeepBrown || isSaturatedDark;
-    if (isHairPixel) {
-      hairPixels++;
+    const isHairPixel = isDeepBrown || isSaturatedBlack || isSaturatedDark;
+    hairMask[p] = isHairPixel ? 1 : 0;
+
+    const y = Math.floor(p / SAMPLE);
+    const x = p - y * SAMPLE;
+
+    if (y < topH) {
+      topTotal++;
+      if (isHairPixel) topHair++;
+    }
+
+    if (y < sideH && x < sideW) {
+      leftTotal++;
+      if (isHairPixel) leftHair++;
+    } else if (y < sideH && x >= SAMPLE - sideW) {
+      rightTotal++;
+      if (isHairPixel) rightHair++;
+    }
+
+    const inDecisionArea =
+      y < topH || (y < sideH && (x < sideW || x >= SAMPLE - sideW));
+    if (inDecisionArea && isHairPixel) {
       hairSatSum += s;
       hairLumaSum += luma;
-      hairSatCount++;
-    }
-    totalPixels++;
-  }
-
-  // Texture/edge check to reduce flat-dark false positives
-  let edgeCount = 0;
-  const EDGE_THRESHOLD = 0.12;
-  for (let y = 0; y < bandH - 1; y++) {
-    for (let x = 0; x < SAMPLE - 1; x++) {
-      const idx = y * SAMPLE + x;
-      const d = Math.abs(lumas[idx] - lumas[idx + 1]) + Math.abs(lumas[idx] - lumas[idx + SAMPLE]);
-      if (d > EDGE_THRESHOLD) edgeCount++;
+      hairCount++;
     }
   }
 
-  const hairCoverage = totalPixels > 0 ? hairPixels / totalPixels : 0;
-  const edgeRatio = edgeCount / Math.max(1, (bandH - 1) * (SAMPLE - 1));
-  const avgHairSat = hairSatCount > 0 ? hairSatSum / hairSatCount : 0;
-  const avgHairLuma = hairSatCount > 0 ? hairLumaSum / hairSatCount : 0;
+  const topCoverage = topTotal > 0 ? topHair / topTotal : 0;
+  const leftCoverage = leftTotal > 0 ? leftHair / leftTotal : 0;
+  const rightCoverage = rightTotal > 0 ? rightHair / rightTotal : 0;
+  const avgHairSat = hairCount > 0 ? hairSatSum / hairCount : 0;
+  const avgHairLuma = hairCount > 0 ? hairLumaSum / hairCount : 0;
 
-  const HAIR_COVERAGE_MIN = 0.28;
-  const EDGE_RATIO_MIN = 0.03;
+  // Continuity = how many scanlines have a long unbroken hair run (prevents speckle noise).
+  const topRowRunMin = Math.max(2, Math.floor(SAMPLE * 0.55));
+  let solidTopRows = 0;
+  for (let y = 0; y < topH; y++) {
+    let run = 0;
+    let maxRun = 0;
+    const rowBase = y * SAMPLE;
+    for (let x = 0; x < SAMPLE; x++) {
+      if (hairMask[rowBase + x]) {
+        run++;
+        if (run > maxRun) maxRun = run;
+      } else {
+        run = 0;
+      }
+    }
+    if (maxRun >= topRowRunMin) solidTopRows++;
+  }
+  const topContinuity = topH > 0 ? solidTopRows / topH : 0;
+
+  const sideColRunMin = Math.max(2, Math.floor(sideH * 0.55));
+  let solidLeftCols = 0;
+  for (let x = 0; x < sideW; x++) {
+    let run = 0;
+    let maxRun = 0;
+    for (let y = 0; y < sideH; y++) {
+      if (hairMask[y * SAMPLE + x]) {
+        run++;
+        if (run > maxRun) maxRun = run;
+      } else {
+        run = 0;
+      }
+    }
+    if (maxRun >= sideColRunMin) solidLeftCols++;
+  }
+  const leftContinuity = sideW > 0 ? solidLeftCols / sideW : 0;
+
+  let solidRightCols = 0;
+  for (let x = SAMPLE - sideW; x < SAMPLE; x++) {
+    let run = 0;
+    let maxRun = 0;
+    for (let y = 0; y < sideH; y++) {
+      if (hairMask[y * SAMPLE + x]) {
+        run++;
+        if (run > maxRun) maxRun = run;
+      } else {
+        run = 0;
+      }
+    }
+    if (maxRun >= sideColRunMin) solidRightCols++;
+  }
+  const rightContinuity = sideW > 0 ? solidRightCols / sideW : 0;
+
+  const TOP_COVERAGE_MIN = 0.32;
+  const TOP_CONTINUITY_MIN = 0.35;
+  const SIDE_COVERAGE_MIN = 0.18;
+  const SIDE_CONTINUITY_MIN = 0.25;
+  const BOTH_SIDES_MIN = 0.12;
   const SAT_MIN = 0.14;
-  const isHuman =
-    hairCoverage >= HAIR_COVERAGE_MIN &&
-    avgHairSat >= SAT_MIN &&
-    edgeRatio >= EDGE_RATIO_MIN &&
-    avgHairLuma < 0.7;
+  const LUMA_MAX = 0.65;
 
+  const topStrong = topCoverage >= TOP_COVERAGE_MIN && topContinuity >= TOP_CONTINUITY_MIN;
+  const leftStrong = leftCoverage >= SIDE_COVERAGE_MIN && leftContinuity >= SIDE_CONTINUITY_MIN;
+  const rightStrong = rightCoverage >= SIDE_COVERAGE_MIN && rightContinuity >= SIDE_CONTINUITY_MIN;
+  const sidesStrong =
+    (leftStrong && rightStrong) ||
+    ((leftStrong || rightStrong) && Math.min(leftCoverage, rightCoverage) >= BOTH_SIDES_MIN);
+
+  const isHuman = topStrong && sidesStrong && avgHairSat >= SAT_MIN && avgHairLuma <= LUMA_MAX;
+
+  const fmt = (v: number) => `${(v * 100).toFixed(0)}%`;
   return {
     isHuman,
-    hairCoverage,
-    edgeRatio,
+    topCoverage,
+    leftCoverage,
+    rightCoverage,
+    topContinuity,
+    leftContinuity,
+    rightContinuity,
+    avgHairSat,
+    avgHairLuma,
     reason: isHuman
-      ? `Top hair detected (coverage ${(hairCoverage * 100).toFixed(0)}%, sat ${(avgHairSat * 100).toFixed(0)}%, texture ${(edgeRatio * 100).toFixed(0)}%)`
-      : `No strong top-hair (coverage ${(hairCoverage * 100).toFixed(0)}%, sat ${(avgHairSat * 100).toFixed(0)}%, texture ${(edgeRatio * 100).toFixed(0)}%)`
+      ? `Hair block detected (top ${fmt(topCoverage)}/${fmt(topContinuity)}, left ${fmt(leftCoverage)}/${fmt(leftContinuity)}, right ${fmt(rightCoverage)}/${fmt(rightContinuity)}, sat ${fmt(avgHairSat)}, luma ${fmt(avgHairLuma)})`
+      : `No strong hair block (top ${fmt(topCoverage)}/${fmt(topContinuity)}, left ${fmt(leftCoverage)}/${fmt(leftContinuity)}, right ${fmt(rightCoverage)}/${fmt(rightContinuity)}, sat ${fmt(avgHairSat)}, luma ${fmt(avgHairLuma)})`
   };
 };
 
@@ -792,76 +896,57 @@ const App: React.FC = () => {
         */
 
         // ============================================
-        // COCO-SSD PERSON DETECTION (HEAD ROI + GATING)
+        // COCO-SSD PERSON DETECTION (head ROI fallback only)
         const now = Date.now();
         const PERSON_REFRESH_MS = 650;
         const PERSON_MIN_SCORE = 0.35;
         const PERSON_MAX_BOXES = 3;
-        const PERSON_GATE_MIN_SCORE = 0.4;
 
-        const coco = cocoDetectorRef.current;
-        if (coco && now - lastPersonDetectAtRef.current > PERSON_REFRESH_MS) {
-          try {
-            const detections = await coco.detect(video, PERSON_MAX_BOXES, PERSON_MIN_SCORE);
-            const personHeads = (detections || [])
-              .filter((d: cocoSsd.DetectedObject) => d.class === 'person' && d.score >= PERSON_MIN_SCORE)
-              .map((d: cocoSsd.DetectedObject) => {
-                const [px, py, pw, ph] = d.bbox;
-                const aspect = ph / Math.max(1, pw);
+        const shouldUsePersonFallback =
+          !faceDetections.some((d: any) => (d.probability?.[0] ?? 0) >= DISPLAY_CONFIDENCE_MIN);
 
-                // Derive a head-only ROI from the person box (do NOT display body boxes)
-                const headHeightRatio = aspect < 1.2 ? 0.45 : 0.3;
-                const headWidthRatio = aspect < 1.2 ? 0.65 : 0.45;
+        if (shouldUsePersonFallback) {
+          const coco = cocoDetectorRef.current;
+          if (coco && now - lastPersonDetectAtRef.current > PERSON_REFRESH_MS) {
+            try {
+              const detections = await coco.detect(video, PERSON_MAX_BOXES, PERSON_MIN_SCORE);
+              const personHeads = (detections || [])
+                .filter((d: cocoSsd.DetectedObject) => d.class === 'person' && d.score >= PERSON_MIN_SCORE)
+                .map((d: cocoSsd.DetectedObject) => {
+                  const [px, py, pw, ph] = d.bbox;
+                  const aspect = ph / Math.max(1, pw);
 
-                const headW = pw * headWidthRatio;
-                const headH = ph * headHeightRatio;
-                const headX = px + (pw - headW) / 2;
-                const headY = py;
+                  // Derive a head-only ROI from the person box (do NOT display body boxes)
+                  const headHeightRatio = aspect < 1.2 ? 0.45 : 0.3;
+                  const headWidthRatio = aspect < 1.2 ? 0.65 : 0.45;
 
-                const clampedX = Math.max(0, Math.min(video.videoWidth - 1, headX));
-                const clampedY = Math.max(0, Math.min(video.videoHeight - 1, headY));
-                const clampedW = Math.max(1, Math.min(video.videoWidth - clampedX, headW));
-                const clampedH = Math.max(1, Math.min(video.videoHeight - clampedY, headH));
+                  const headW = pw * headWidthRatio;
+                  const headH = ph * headHeightRatio;
+                  const headX = px + (pw - headW) / 2;
+                  const headY = py;
 
-                return {
-                  topLeft: [clampedX, clampedY],
-                  bottomRight: [clampedX + clampedW, clampedY + clampedH],
-                  probability: [d.score],
-                  _source: 'COCO_PERSON'
-                };
-              });
+                  const clampedX = Math.max(0, Math.min(video.videoWidth - 1, headX));
+                  const clampedY = Math.max(0, Math.min(video.videoHeight - 1, headY));
+                  const clampedW = Math.max(1, Math.min(video.videoWidth - clampedX, headW));
+                  const clampedH = Math.max(1, Math.min(video.videoHeight - clampedY, headH));
 
-            cachedPersonHeadDetectionsRef.current = personHeads;
-            lastPersonDetectAtRef.current = now;
-          } catch (err) {
-            console.warn("COCO-SSD detect() failed:", err);
+                  return {
+                    topLeft: [clampedX, clampedY],
+                    bottomRight: [clampedX + clampedW, clampedY + clampedH],
+                    probability: [d.score],
+                    _source: 'COCO_PERSON'
+                  };
+                });
+
+              cachedPersonHeadDetectionsRef.current = personHeads;
+              lastPersonDetectAtRef.current = now;
+            } catch (err) {
+              console.warn("COCO-SSD detect() failed:", err);
+            }
           }
-        }
 
-        const personHeads = cachedPersonHeadDetectionsRef.current;
-        const personGateEnabled = personHeads.some(
-          (d: any) => (d.probability?.[0] ?? 0) >= PERSON_GATE_MIN_SCORE
-        );
-
-        if (personGateEnabled && personHeads.length > 0) {
-          const gated = faceDetections.filter((face: any) => {
-            const [x, y] = face.topLeft;
-            const [x2, y2] = face.bottomRight;
-            const cx = (x + x2) / 2;
-            const cy = (y + y2) / 2;
-            return personHeads.some((p: any) => {
-              const [px, py] = p.topLeft;
-              const [px2, py2] = p.bottomRight;
-              return cx >= px && cx <= px2 && cy >= py && cy <= py2;
-            });
-          });
-
-          // If face detections don't land inside the person-head ROI, prefer the ROI itself.
-          faceDetections = gated.length > 0 ? gated : [...personHeads];
-        } else {
-          const shouldUsePersonFallback =
-            !faceDetections.some((d: any) => (d.probability?.[0] ?? 0) >= DISPLAY_CONFIDENCE_MIN);
-          if (shouldUsePersonFallback && personHeads.length > 0) {
+          const personHeads = cachedPersonHeadDetectionsRef.current;
+          if (personHeads.length > 0) {
             faceDetections.push(...personHeads);
           }
         }
